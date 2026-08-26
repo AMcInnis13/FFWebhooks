@@ -91,6 +91,10 @@ dry-run-output.txt
 scratch/
 tmp/
 
+# Temp file from save_state()'s atomic write. Renamed into place immediately,
+# but a crash mid-write could strand one next to the real state.json.
+.state-*.tmp
+
 # ---------------------------------------------------------------------------
 # Editors and OS
 # ---------------------------------------------------------------------------
