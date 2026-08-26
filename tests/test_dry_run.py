@@ -1,0 +1,123 @@
+"""Tests for --dry-run (T-011).
+
+Guards three properties that are easy to break by accident: no network, no
+state write, and output that survives a non-UTF-8 stdout.
+"""
+
+import io
+import unittest
+from contextlib import redirect_stdout
+from unittest import mock
+
+from poller import EXIT_OK, main, run_dry_run
+
+
+def capture(fn, *args, **kwargs):
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        result = fn(*args, **kwargs)
+    return result, buffer.getvalue()
+
+
+class TestOutput(unittest.TestCase):
+    def setUp(self):
+        self.code, self.output = capture(run_dry_run)
+
+    def test_exits_successfully(self):
+        self.assertEqual(self.code, EXIT_OK)
+
+    def test_all_four_sections_are_present(self):
+        for section in ("bootstrap", "transactions", "weekly results", "lineup reminders"):
+            with self.subTest(section=section):
+                self.assertIn(section, self.output)
+
+    def test_every_message_type_renders(self):
+        self.assertIn("Trade processed", self.output)
+        self.assertIn("$42 waiver", self.output)
+        self.assertIn("Week 3 Results", self.output)
+        self.assertIn("Lineups lock in 30 minutes", self.output)
+        self.assertIn("notifier is online", self.output)
+
+    def test_bye_and_tie_paths_are_exercised(self):
+        self.assertIn("(bye)", self.output)
+
+    def test_unclassified_actions_are_not_printed(self):
+        # The fixture deliberately includes an 'UNKNOWN' verb.
+        self.assertNotIn("Should Not Appear", self.output)
+        self.assertNotIn("UNKNOWN", self.output)
+
+    def test_reports_a_message_count(self):
+        self.assertIn("messages would have been sent", self.output)
+
+    def test_says_it_is_a_dry_run(self):
+        self.assertIn("DRY RUN", self.output)
+        self.assertIn("no network calls", self.output)
+
+
+class TestNoSideEffects(unittest.TestCase):
+    def test_no_http_session_is_created(self):
+        with mock.patch("poller.requests.Session", side_effect=AssertionError("network!")):
+            code, _ = capture(run_dry_run)
+        self.assertEqual(code, EXIT_OK)
+
+    def test_state_is_never_written(self):
+        with mock.patch("poller.save_state", side_effect=AssertionError("state written!")):
+            code, _ = capture(run_dry_run)
+        self.assertEqual(code, EXIT_OK)
+
+    def test_no_config_is_loaded_from_the_environment(self):
+        # `python poller.py --dry-run` must work from a bare checkout with no
+        # secrets set.
+        with mock.patch("poller.load_config", side_effect=AssertionError("read env!")):
+            code, _ = capture(main, ["--dry-run"])
+        self.assertEqual(code, EXIT_OK)
+
+
+class TestEncoding(unittest.TestCase):
+    """Regression test for the Windows cp1252 crash found in T-005."""
+
+    def test_survives_a_cp1252_stdout(self):
+        stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+        with redirect_stdout(stream):
+            code = run_dry_run()
+        self.assertEqual(code, EXIT_OK)
+
+    def test_emoji_actually_reach_the_stream(self):
+        raw = io.BytesIO()
+        stream = io.TextIOWrapper(raw, encoding="cp1252", errors="strict")
+        with redirect_stdout(stream):
+            run_dry_run()
+        stream.flush()
+        self.assertIn("🔁".encode("utf-8"), raw.getvalue())
+
+    def test_a_stream_without_reconfigure_does_not_crash(self):
+        # io.StringIO has no reconfigure(); the helper must tolerate that.
+        code, output = capture(run_dry_run)
+        self.assertEqual(code, EXIT_OK)
+        self.assertIn("🔁", output)
+
+
+class TestRouting(unittest.TestCase):
+    def test_cli_dry_run_uses_the_fixture_pipeline(self):
+        code, output = capture(main, ["--dry-run"])
+        self.assertEqual(code, EXIT_OK)
+        self.assertIn("DRY RUN", output)
+
+    def test_an_injected_league_takes_the_normal_path(self):
+        # T-010's tests rely on this: injecting a league must not divert into
+        # the fixture pipeline.
+        with mock.patch("poller.run_dry_run", side_effect=AssertionError("diverted!")):
+            with mock.patch("poller.load_config", side_effect=RuntimeError("stop here")):
+                with self.assertRaises(RuntimeError):
+                    main(["--dry-run"], env={"X": "Y"}, league=object())
+
+    def test_normal_run_does_not_enter_dry_run(self):
+        with mock.patch("poller.run_dry_run", side_effect=AssertionError("diverted!")):
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                code = main([], env={})
+        self.assertNotEqual(code, EXIT_OK)
+
+
+if __name__ == "__main__":
+    unittest.main()

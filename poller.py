@@ -1157,6 +1157,176 @@ def build_league(config: Config):
     )
 
 
+# --------------------------------------------------------------------------
+# Dry run
+# --------------------------------------------------------------------------
+#
+# Fixture data lives here rather than in tests/ because `python poller.py
+# --dry-run` has to work from a bare checkout with no env vars and no test
+# package on the path. It is the one place production code carries fixtures,
+# and it is deliberate.
+
+
+class _FixtureTeam:
+    def __init__(self, team_name):
+        self.team_name = team_name
+
+
+class _FixturePlayer:
+    def __init__(self, name):
+        self.name = name
+
+
+class _FixtureActivity:
+    def __init__(self, date, actions):
+        self.date = date
+        self.actions = actions
+
+
+class _FixtureMatchup:
+    def __init__(self, home_team, home_score, away_team, away_score, is_playoff=False):
+        self.home_team = home_team
+        self.home_score = home_score
+        self.away_team = away_team
+        self.away_score = away_score
+        self.is_playoff = is_playoff
+
+
+class _FixtureLeague:
+    """A league exercising every rendering branch worth eyeballing."""
+
+    current_week = 4
+
+    def __init__(self):
+        wolves = _FixtureTeam("Waiver Wolves")
+        sharks = _FixtureTeam("Sofa Sharks")
+        badgers = _FixtureTeam("Backup Badgers")
+
+        self.activities = [
+            # A three-player, two-team trade.
+            _FixtureActivity(
+                1757000000000,
+                [
+                    (wolves, "TRADE_SENT", _FixturePlayer("Amari Cooper"), 0),
+                    (sharks, "TRADE_RECEIVED", _FixturePlayer("Amari Cooper"), 0),
+                    (wolves, "TRADE_SENT", _FixturePlayer("Rhamondre Stevenson"), 0),
+                    (sharks, "TRADE_RECEIVED", _FixturePlayer("Rhamondre Stevenson"), 0),
+                    (sharks, "TRADE_SENT", _FixturePlayer("Jaylen Waddle"), 0),
+                    (wolves, "TRADE_RECEIVED", _FixturePlayer("Jaylen Waddle"), 0),
+                ],
+            ),
+            # A waiver claim paired with the corresponding drop.
+            _FixtureActivity(
+                1757000100000,
+                [
+                    (wolves, "WAIVER ADDED", _FixturePlayer("Marvin Waivers Jr."), 42),
+                    (wolves, "DROPPED", _FixturePlayer("Cordarrelle Patterson"), 0),
+                ],
+            ),
+            # A free agent add, plus a message type the library could not
+            # classify -- it must be skipped, not printed.
+            _FixtureActivity(
+                1757000200000,
+                [
+                    (badgers, "FA ADDED", _FixturePlayer("Kimani Vidal"), 0),
+                    (badgers, "UNKNOWN", _FixturePlayer("Should Not Appear"), 0),
+                ],
+            ),
+        ]
+
+        self.weeks = {
+            1: [_FixtureMatchup(wolves, 128.4, sharks, 96.2)],
+            2: [_FixtureMatchup(wolves, 101.0, badgers, 101.0)],
+            3: [
+                _FixtureMatchup(wolves, 134.8, sharks, 118.6),
+                _FixtureMatchup(badgers, 88.0, 0, 0),
+            ],
+        }
+
+    def recent_activity(self, size=25):
+        return sorted(self.activities, key=lambda a: a.date, reverse=True)[:size]
+
+    def scoreboard(self, week):
+        return self.weeks.get(week, [])
+
+
+def _fixture_config() -> Config:
+    """Config for a dry run. No env vars required, no real values."""
+    return Config(
+        league_id=1234567,
+        league_year=2026,
+        espn_s2="DRY-RUN",
+        swid="{DRY-RUN}",
+        webhook_url="https://example.invalid/hook",
+        webhook_url_results="https://example.invalid/hook",
+        timezone=DEFAULT_TIMEZONE,
+        lineup_reminders=True,
+    )
+
+
+def _force_utf8_stdout() -> None:
+    """Make stdout accept emoji even when the locale codepage will not.
+
+    On Windows a redirected stdout defaults to cp1252, and printing the
+    messages this notifier builds raises UnicodeEncodeError on the first
+    emoji. Only affects the dry-run printer -- the live path posts JSON over
+    HTTP and never touches the console encoding.
+    """
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is None:
+        return
+    try:
+        reconfigure(encoding="utf-8", errors="replace")
+    except (ValueError, OSError):
+        pass
+
+
+def run_dry_run(now: datetime | None = None) -> int:
+    """Run the real pipeline against fixture data. No network, no state write."""
+    _force_utf8_stdout()
+
+    config = _fixture_config()
+    league = _FixtureLeague()
+    discord = Discord(
+        config.webhook_url, dry_run=True, label="dry-run", session=object(), sleep=lambda _: None
+    )
+
+    # 16:30 UTC on Sunday 13 Sep 2026 is 11:30 CDT: inside the Sunday
+    # reminder window, so that section actually renders.
+    if now is None:
+        now = datetime(2026, 9, 13, 16, 30, tzinfo=timezone.utc)
+
+    print("=== DRY RUN — no network calls, no state written ===")
+    sent = 0
+
+    print("\n--- first run (bootstrap) ---")
+    sent += bootstrap(league, default_state(), discord)
+
+    # A state that has already been bootstrapped, so the feature areas have
+    # something to say.
+    state = default_state()
+    state["posted_weeks"] = [1, 2]
+
+    print("\n--- transactions ---")
+    sent += process_transactions(league, state, discord)
+
+    print("\n--- weekly results ---")
+    sent += process_results(league, state, discord)
+
+    print("\n--- lineup reminders ---")
+    try:
+        sent += process_reminders(
+            config, state, discord, current_week=league.current_week, now=now
+        )
+    except TimezoneUnavailable as exc:
+        # Demonstrating the failure is the useful outcome here; a dry run
+        # should not fail because the local box lacks a tz database.
+        print(f"(skipped: {exc})")
+
+    print(f"\n=== DRY RUN COMPLETE — {sent} messages would have been sent ===")
+    return EXIT_OK
+
+
 def _parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Post ESPN fantasy football updates to a Discord webhook."
@@ -1186,6 +1356,12 @@ def main(
     without a network, a clock, or a state file.
     """
     args = _parse_args(argv)
+
+    # A real `--dry-run` from the CLI uses fixture everything, so it works
+    # from a bare checkout with no secrets set. Tests inject a league and go
+    # through the normal path instead.
+    if args.dry_run and league is None and env is None:
+        return run_dry_run(now=now)
 
     try:
         config = load_config(env)
