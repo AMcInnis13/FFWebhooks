@@ -508,3 +508,139 @@ class Discord:
         # Clamped so a bogus value cannot park the job until the Actions
         # six-hour ceiling.
         return max(0.0, min(seconds, MAX_RETRY_AFTER_SECONDS))
+
+
+# --------------------------------------------------------------------------
+# Transactions
+# --------------------------------------------------------------------------
+
+ACTION_TRADE_SENT = "TRADE_SENT"
+ACTION_TRADE_RECEIVED = "TRADE_RECEIVED"
+ACTION_FA_ADDED = "FA ADDED"
+ACTION_WAIVER_ADDED = "WAIVER ADDED"
+ACTION_DROPPED = "DROPPED"
+
+UNKNOWN_TEAM_LABEL = "Unknown team"
+
+# U+2212, a real minus sign -- it lines up with "+" in Discord's font where a
+# hyphen sits too high.
+DROP_MARK = "−"
+
+
+def _normalized_actions(activity):
+    """Flatten one Activity's action rows, absorbing the library's quirks.
+
+    espn_api hands back 4-tuples but is loose about their contents: the team
+    can be ``''``, the player can be a bare int id or the string 'Unknown',
+    and the verb is 'UNKNOWN' for any message id missing from ACTIVITY_MAP.
+    Everything downstream assumes clean strings, so it is all handled here.
+    """
+    for action in getattr(activity, "actions", []) or []:
+        row = tuple(action)
+        if not row:
+            continue
+        team = team_name(row[0]) or UNKNOWN_TEAM_LABEL
+        verb = str(row[1]).strip().upper() if len(row) > 1 and row[1] is not None else ""
+        player = player_name(row[2]) if len(row) > 2 else ""
+        bid = _as_int(row[3] if len(row) > 3 else 0)
+        if not player:
+            continue
+        yield team, verb, player, bid
+
+
+def _append_unique(bucket: dict, order: list, key: str, value) -> None:
+    """Record value under key, tracking first-seen order.
+
+    The order list is checked independently of the bucket because adds and
+    drops share one order list while keeping separate buckets -- tying the
+    two together appends a team twice and splits its add/drop pair into two
+    blocks, which is the exact thing this feature is meant to avoid.
+    """
+    if key not in bucket:
+        bucket[key] = []
+    if key not in order:
+        order.append(key)
+    if value not in bucket[key]:
+        bucket[key].append(value)
+
+
+def render_activity(activity) -> str:
+    """Render one Activity as a single Discord message.
+
+    One message per Activity, not per action: a trade reads as one block
+    showing what each side received, and an add/drop pair from one team reads
+    as one entry rather than two disconnected messages.
+
+    Returns "" when there is nothing worth posting -- an activity made
+    entirely of unrecognised message types, for example. Callers must still
+    record such an activity as seen, or it will be reconsidered forever.
+    """
+    received: dict[str, list[str]] = {}
+    sent: dict[str, list[str]] = {}
+    adds: dict[str, list[tuple[str, int, bool]]] = {}
+    drops: dict[str, list[str]] = {}
+    trade_order: list[str] = []
+    sent_order: list[str] = []
+    roster_order: list[str] = []
+
+    for team, verb, player, bid in _normalized_actions(activity):
+        if verb == ACTION_TRADE_RECEIVED:
+            _append_unique(received, trade_order, team, player)
+        elif verb == ACTION_TRADE_SENT:
+            _append_unique(sent, sent_order, team, player)
+        elif verb in (ACTION_FA_ADDED, ACTION_WAIVER_ADDED):
+            _append_unique(adds, roster_order, team, (player, bid, verb == ACTION_WAIVER_ADDED))
+        elif verb == ACTION_DROPPED:
+            _append_unique(drops, roster_order, team, player)
+        # Anything else -- including the library's 'UNKNOWN' -- is skipped
+        # rather than rendered, so a message id we don't recognise never
+        # reaches the channel as noise.
+
+    blocks: list[str] = []
+
+    if received or sent:
+        blocks.append(_render_trade(received, sent, trade_order, sent_order))
+
+    for team in roster_order:
+        blocks.append(_render_roster_moves(team, adds.get(team, []), drops.get(team, [])))
+
+    return "\n".join(block for block in blocks if block)
+
+
+def _render_trade(received, sent, trade_order, sent_order) -> str:
+    lines = ["\U0001f501 Trade processed"]
+
+    for team in trade_order:
+        lines.append(f"  {team} gets: {', '.join(received[team])}")
+
+    # A TRADE_SENT row is only paired with a TRADE_RECEIVED when espn_api
+    # could resolve the receiving team (activity.py:32). When it could not,
+    # say who gave the player up rather than dropping them from the message.
+    claimed = {player for players in received.values() for player in players}
+    for team in sent_order:
+        orphaned = [player for player in sent[team] if player not in claimed]
+        if orphaned:
+            lines.append(f"  {team} gives up: {', '.join(orphaned)}")
+
+    return "\n".join(lines)
+
+
+def _render_roster_moves(team: str, adds, drops) -> str:
+    if not adds and not drops:
+        return ""
+
+    header = "\U0001f4e5" if adds else "\U0001f4e4"
+    lines = [f"{header} {team}"]
+
+    for player, bid, is_waiver in adds:
+        if is_waiver and bid > 0:
+            lines.append(f"  + {player} (${bid} waiver)")
+        elif is_waiver:
+            lines.append(f"  + {player} (waiver)")
+        else:
+            lines.append(f"  + {player}")
+
+    for player in drops:
+        lines.append(f"  {DROP_MARK} {player}")
+
+    return "\n".join(lines)
