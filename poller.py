@@ -707,3 +707,160 @@ def process_transactions(league, state: dict, discord: Discord) -> int:
     state["last_activity_ms"] = watermark
     state["seen_fingerprints"] = seen
     return posted
+
+
+# --------------------------------------------------------------------------
+# Weekly results
+# --------------------------------------------------------------------------
+
+BYE_LABEL = "Unknown team"
+
+
+def _as_float(value, fallback: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _format_score(value) -> str:
+    return f"{_as_float(value):.1f}"
+
+
+def _is_missing_side(team) -> bool:
+    """True when a Matchup side is absent rather than a real team.
+
+    A bye comes back with the team id and score as 0 rather than as a Team
+    object, so falsy scalars mean "no opponent". A real Team instance is
+    always truthy, even when its name is blank.
+    """
+    if team is None:
+        return True
+    if isinstance(team, bool):
+        return not team
+    if isinstance(team, (int, float)):
+        return not team
+    if isinstance(team, str):
+        return not team.strip()
+    return False
+
+
+def render_week(week: int, matchups) -> str:
+    """Render one completed week's scoreboard as a single message.
+
+    Returns "" when there is nothing to show.
+    """
+    matchups = list(matchups or [])
+    if not matchups:
+        return ""
+
+    lines: list[str] = []
+    scores: list[tuple[str, float]] = []
+    playoff_flags: list[bool] = []
+
+    for matchup in matchups:
+        home = getattr(matchup, "home_team", None)
+        away = getattr(matchup, "away_team", None)
+        home_score = _as_float(getattr(matchup, "home_score", 0))
+        away_score = _as_float(getattr(matchup, "away_score", 0))
+        is_playoff = bool(getattr(matchup, "is_playoff", False))
+        playoff_flags.append(is_playoff)
+
+        home_label = team_name(home) or BYE_LABEL
+        away_label = team_name(away) or BYE_LABEL
+
+        if _is_missing_side(away):
+            # A bye is not a result, so it stays out of the high/low race.
+            lines.append((f"\U0001f4a4 {home_label} {_format_score(home_score)} (bye)", is_playoff))
+            continue
+        if _is_missing_side(home):
+            lines.append((f"\U0001f4a4 {away_label} {_format_score(away_score)} (bye)", is_playoff))
+            continue
+
+        scores.append((home_label, home_score))
+        scores.append((away_label, away_score))
+
+        if home_score == away_score:
+            line = (
+                f"\U0001f91d {home_label} {_format_score(home_score)} — "
+                f"{away_label} {_format_score(away_score)} (tie)"
+            )
+        elif home_score > away_score:
+            line = (
+                f"✅ {home_label} {_format_score(home_score)} — "
+                f"{away_label} {_format_score(away_score)}"
+            )
+        else:
+            line = (
+                f"✅ {away_label} {_format_score(away_score)} — "
+                f"{home_label} {_format_score(home_score)}"
+            )
+        lines.append((line, is_playoff))
+
+    all_playoff = bool(playoff_flags) and all(playoff_flags)
+    any_playoff = any(playoff_flags)
+
+    if all_playoff:
+        header = f"\U0001f3c6 Week {week} Playoff Results"
+    else:
+        header = f"\U0001f3c8 Week {week} Results"
+
+    body = []
+    for line, is_playoff in lines:
+        # Tag individual games only in a mixed week; repeating "(playoff)" on
+        # every line of an all-playoff week is noise the header already covers.
+        if is_playoff and any_playoff and not all_playoff:
+            body.append(f"  {line} (playoff)")
+        else:
+            body.append(f"  {line}")
+
+    rendered = [header] + body
+
+    if scores:
+        best = max(score for _, score in scores)
+        worst = min(score for _, score in scores)
+        high_teams = ", ".join(name for name, score in scores if score == best)
+        low_teams = ", ".join(name for name, score in scores if score == worst)
+        rendered.append("")
+        rendered.append(f"  \U0001f4c8 High: {high_teams} — {_format_score(best)}")
+        rendered.append(f"  \U0001f4c9 Low: {low_teams} — {_format_score(worst)}")
+
+    return "\n".join(rendered)
+
+
+def process_results(league, state: dict, discord: Discord) -> int:
+    """Post results for every completed week not already announced.
+
+    A week counts as complete when ``week < league.current_week``. Detecting
+    "all games final" from player states was considered and rejected as not
+    worth the complexity.
+
+    Returns the number of weeks posted.
+    """
+    current_week = _as_int(getattr(league, "current_week", 0))
+    posted_weeks = list(state.get("posted_weeks") or [])
+    posted_set = set(posted_weeks)
+    posted = 0
+
+    for week in range(1, current_week):
+        if week in posted_set:
+            continue
+
+        message = render_week(week, league.scoreboard(week))
+        if not message:
+            # Deliberately NOT marked as posted. An empty scoreboard is more
+            # likely a transient ESPN hiccup than a week that truly had no
+            # games, and marking it would skip those results permanently.
+            # Re-checking costs one call per run and self-heals.
+            warn(f"week {week} returned no matchups; will retry next run")
+            continue
+
+        discord.post(message)
+        posted += 1
+
+        posted_weeks.append(week)
+        posted_set.add(week)
+        state["posted_weeks"] = posted_weeks
+
+    state["posted_weeks"] = posted_weeks
+    return posted
