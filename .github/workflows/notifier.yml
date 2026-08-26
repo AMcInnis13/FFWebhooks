@@ -1,0 +1,102 @@
+name: Fantasy notifier
+
+on:
+  schedule:
+    # Every 20 minutes, September through January only.
+    #
+    # The month field (9-12,1) keeps the job from burning runs in the
+    # offseason. Public repositories get unlimited Actions minutes, so this
+    # is about noise rather than cost -- but a job that cannot do anything
+    # useful should not be waking up 2,000 times a month.
+    #
+    # DYNASTY LEAGUES: rookie drafts and offseason trades happen year round.
+    # To widen this, change the month field to `*`:
+    #     - cron: "*/20 * * * *"
+    # Nothing else needs to change; the script is already safe to run in the
+    # offseason (no completed weeks to post, and reminders self-suppress
+    # outside weeks 1-18).
+    #
+    # GitHub's scheduler is best-effort and can run several minutes late.
+    # The lineup reminder window is deliberately wider than this interval to
+    # absorb that; see REMINDER_WINDOW_MINUTES in poller.py.
+    - cron: "*/20 * * 9-12,1 *"
+
+  # Manual trigger, for the first-run smoke test and for debugging.
+  workflow_dispatch:
+
+# The job commits state.json back to the repository.
+permissions:
+  contents: write
+
+# Two runs must never race on the state commit. Queue rather than cancel:
+# a cancelled run may have already posted to Discord but not yet saved the
+# watermark, which would repost those messages on the next run.
+concurrency:
+  group: fantasy-notifier-state
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    # A hung run should fail fast rather than idle toward the six-hour ceiling.
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # Full history: the commit step rebases before pushing, and a
+          # shallow clone makes that unreliable.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Run notifier
+        # Secrets are scoped to this single step -- the only one that needs
+        # them. No step echoes them, dumps the environment, or enables
+        # `set -x`: Actions masks known secret values in logs, but values
+        # derived from them are not masked.
+        env:
+          LEAGUE_ID: ${{ secrets.LEAGUE_ID }}
+          LEAGUE_YEAR: ${{ secrets.LEAGUE_YEAR }}
+          ESPN_S2: ${{ secrets.ESPN_S2 }}
+          SWID: ${{ secrets.SWID }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_WEBHOOK_URL_RESULTS: ${{ secrets.DISCORD_WEBHOOK_URL_RESULTS }}
+          # Non-sensitive, so these live in repository variables where they
+          # are easy to edit. Both fall back to the script's defaults when
+          # unset (America/Chicago, reminders on).
+          TIMEZONE: ${{ vars.TIMEZONE }}
+          LINEUP_REMINDERS: ${{ vars.LINEUP_REMINDERS }}
+        run: python poller.py
+
+      - name: Commit state
+        # always(): the notifier exits non-zero on a partial failure, but it
+        # has already written the progress it did make. Skipping the commit
+        # would discard that watermark and repost those messages on the next
+        # run. The job still reports failure via the step above.
+        if: always()
+        run: |
+          if git diff --quiet -- state.json; then
+            echo "state.json unchanged; nothing to commit"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add state.json
+          git commit -m "chore(state): update notifier watermark"
+
+          # Rebase onto anything pushed since checkout, then push. The
+          # concurrency group above should prevent races, but a manual
+          # dispatch overlapping a scheduled run is still possible.
+          git pull --rebase --autostash
+          git push
