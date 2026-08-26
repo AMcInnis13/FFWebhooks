@@ -993,3 +993,55 @@ def process_reminders(
     posted_reminders.append(key)
     state["posted_reminders"] = posted_reminders
     return 1
+
+
+# --------------------------------------------------------------------------
+# First-run bootstrap
+# --------------------------------------------------------------------------
+
+
+def bootstrap(league, state: dict, discord: Discord) -> int:
+    """Seed state from the league's current position without posting backlog.
+
+    The single most dangerous moment in this project's life: on a fresh
+    state.json the naive path would replay every activity and every finished
+    week into the channel at once. Instead the current position is recorded
+    as already-seen and one confirmation message is sent.
+
+    Storing fingerprints here is required, not belt-and-braces. The watermark
+    comparison in process_transactions is ``>=`` (see T-006), so the newest
+    activity is reconsidered on the very next run -- without its fingerprint
+    on file it would post as though it were new.
+
+    Returns the number of messages posted (always 1).
+    """
+    activities = list(league.recent_activity(size=RECENT_ACTIVITY_SIZE) or [])
+    current_week = _as_int(getattr(league, "current_week", 0))
+
+    watermark = max(
+        (_as_int(getattr(activity, "date", 0)) for activity in activities),
+        default=0,
+    )
+    fingerprints = [fingerprint(activity) for activity in activities]
+    completed_weeks = list(range(1, current_week))
+
+    state["last_activity_ms"] = watermark
+    state["seen_fingerprints"] = fingerprints
+    state["posted_weeks"] = completed_weeks
+    # posted_reminders is deliberately left alone. A reminder due right now
+    # is current news, not backlog, so the next run may legitimately send it.
+
+    discord.post(render_bootstrap_message(len(activities), len(completed_weeks)))
+    return 1
+
+
+def render_bootstrap_message(activity_count: int, week_count: int) -> str:
+    weeks = "week" if week_count == 1 else "weeks"
+    entries = "transaction" if activity_count == 1 else "transactions"
+    return (
+        "✅ Fantasy notifier is online.\n"
+        "Watching transactions, weekly results, and lineup lock reminders.\n"
+        f"Starting from now: {activity_count} existing {entries} and "
+        f"{week_count} completed {weeks} marked as already seen, "
+        "so no backlog will be posted."
+    )
