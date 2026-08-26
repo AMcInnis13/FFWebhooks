@@ -644,3 +644,66 @@ def _render_roster_moves(team: str, adds, drops) -> str:
         lines.append(f"  {DROP_MARK} {player}")
 
     return "\n".join(lines)
+
+
+RECENT_ACTIVITY_SIZE = 50
+
+
+def process_transactions(league, state: dict, discord: Discord) -> int:
+    """Post activities newer than the watermark, oldest first.
+
+    Returns the number of messages sent.
+
+    Two dedup mechanisms, and both are load-bearing:
+
+    * The watermark on ``Activity.date`` is the cheap primary filter.
+    * Fingerprints catch what the watermark alone would drop. The date
+      comparison is ``>=``, not ``>``, precisely so an activity sharing a
+      millisecond with one already posted is reconsidered rather than
+      skipped forever; the fingerprint is what stops it posting twice.
+
+    ``recent_activity`` returns newest-first, so the list is reversed before
+    posting -- otherwise the channel would read backwards. The watermark and
+    fingerprint are recorded only after a post succeeds, so a mid-run failure
+    leaves the remaining activities to retry on the next run rather than
+    being silently skipped.
+    """
+    activities = league.recent_activity(size=RECENT_ACTIVITY_SIZE) or []
+
+    # Reverse first, then stable-sort: activities sharing a timestamp keep
+    # their reversed (oldest-first) relative order.
+    ordered = list(reversed(list(activities)))
+    ordered.sort(key=lambda activity: _as_int(getattr(activity, "date", 0)))
+
+    watermark = _as_int(state.get("last_activity_ms"), 0)
+    seen = list(state.get("seen_fingerprints") or [])
+    seen_set = set(seen)
+    posted = 0
+
+    for activity in ordered:
+        date = _as_int(getattr(activity, "date", 0))
+        if date < watermark:
+            continue
+
+        mark = fingerprint(activity)
+        if mark in seen_set:
+            continue
+
+        message = render_activity(activity)
+        if message:
+            discord.post(message)
+            posted += 1
+
+        # Recorded even when nothing rendered. An activity made entirely of
+        # message types we don't recognise has nothing to say, but leaving it
+        # unmarked means reconsidering it on every run forever.
+        seen.append(mark)
+        seen_set.add(mark)
+        watermark = max(watermark, date)
+
+        state["last_activity_ms"] = watermark
+        state["seen_fingerprints"] = seen
+
+    state["last_activity_ms"] = watermark
+    state["seen_fingerprints"] = seen
+    return posted
