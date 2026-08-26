@@ -1,0 +1,10 @@
+# Runtime dependencies. Exactly two, by design -- see CLAUDE.md.
+# Tests use the standard library's unittest and add nothing here.
+
+# ESPN Fantasy API client. Pre-1.0, so minor bumps can carry breaking changes:
+# pinned to patch-level updates only. If ESPN changes their API and the fix
+# lands in a new minor, bump this deliberately rather than floating.
+espn_api~=0.46.0
+
+# HTTP client for Discord webhook POSTs. Stable major, so minors are allowed.
+requests~=2.34
