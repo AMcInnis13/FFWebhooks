@@ -8,8 +8,15 @@ import io
 import unittest
 from contextlib import redirect_stdout
 from unittest import mock
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from poller import EXIT_OK, main, run_dry_run
+
+try:
+    ZoneInfo("America/Chicago")
+    HAVE_TZDATA = True
+except ZoneInfoNotFoundError:  # pragma: no cover - environment dependent
+    HAVE_TZDATA = False
 
 
 def capture(fn, *args, **kwargs):
@@ -35,8 +42,19 @@ class TestOutput(unittest.TestCase):
         self.assertIn("Trade processed", self.output)
         self.assertIn("$42 waiver", self.output)
         self.assertIn("Week 3 Results", self.output)
-        self.assertIn("Lineups lock in 30 minutes", self.output)
         self.assertIn("notifier is online", self.output)
+
+    @unittest.skipUnless(HAVE_TZDATA, "tz database unavailable (pip install tzdata)")
+    def test_reminder_renders_when_a_timezone_is_resolvable(self):
+        self.assertIn("Lineups lock in 30 minutes", self.output)
+
+    def test_reminder_section_degrades_rather_than_crashing(self):
+        # Without a tz database the section reports why it was skipped. A dry
+        # run must not fail because the local box lacks tzdata.
+        self.assertTrue(
+            "Lineups lock in 30 minutes" in self.output or "skipped:" in self.output,
+            "reminder section neither rendered nor explained itself",
+        )
 
     def test_bye_and_tie_paths_are_exercised(self):
         self.assertIn("(bye)", self.output)

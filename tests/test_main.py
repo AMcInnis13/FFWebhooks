@@ -36,6 +36,12 @@ FAKE_ENV = {
     "ESPN_S2": "FAKE_S2",
     "SWID": "{FAKE-SWID}",
     "DISCORD_WEBHOOK_URL": "https://example.invalid/hook",
+    # Reminders are disabled here so these tests exercise orchestration
+    # rather than the tz database. With them on, a machine without tzdata
+    # makes every run report a timezone failure and exit non-zero, so the
+    # whole module would fail for a reason it is not testing. Reminder
+    # behavior is covered by tests/test_reminders.py.
+    "LINEUP_REMINDERS": "false",
 }
 
 

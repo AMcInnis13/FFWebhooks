@@ -26,8 +26,23 @@ from poller import (
     render_reminder,
 )
 
-CT = ZoneInfo("America/Chicago")
 UTC = timezone.utc
+
+# Bare Windows ships no tz database. Resolving a real zone at import time
+# would take this whole module down with a loader error rather than a skip,
+# so the lookup is guarded and the tests that genuinely need real DST data
+# are marked. The stubbed failure tests below still run everywhere -- they
+# are the ones that matter most when tzdata is absent.
+try:
+    CT = ZoneInfo("America/Chicago")
+    HAVE_TZDATA = True
+except ZoneInfoNotFoundError:  # pragma: no cover - environment dependent
+    CT = UTC
+    HAVE_TZDATA = False
+
+requires_tzdata = unittest.skipUnless(
+    HAVE_TZDATA, "tz database unavailable (pip install tzdata)"
+)
 
 # Verified: Sep 13 2026 is a Sunday in CDT, Nov 8 2026 a Sunday in CST,
 # Sep 10 a Thursday in CDT, Nov 12 a Thursday in CST.
@@ -75,6 +90,7 @@ def fire(now, state=None, cfg=None, current_week=3):
     return posted, state, discord
 
 
+@requires_tzdata
 class TestWindowDetection(unittest.TestCase):
     def test_fires_thirty_minutes_before_sunday_kickoff(self):
         result = due_reminder(ct(*SUNDAY_CDT, 11, 30))
@@ -119,6 +135,7 @@ class TestWindowDetection(unittest.TestCase):
         self.assertIsNone(due_reminder(ct(*SUNDAY_CDT, 18, 45)))
 
 
+@requires_tzdata
 class TestDaylightSaving(unittest.TestCase):
     """The reason reminders are computed at runtime instead of by UTC cron."""
 
@@ -151,6 +168,7 @@ class TestDaylightSaving(unittest.TestCase):
         self.assertEqual(when.date().isoformat(), "2026-09-13")
 
 
+@requires_tzdata
 class TestCronCoverage(unittest.TestCase):
     """A 20-minute cron must never step over the window."""
 
@@ -181,6 +199,7 @@ class TestCronCoverage(unittest.TestCase):
         self.assertGreater(REMINDER_WINDOW_MINUTES, 20)
 
 
+@requires_tzdata
 class TestFiresOnce(unittest.TestCase):
     def test_repeated_runs_inside_the_window_post_once(self):
         state = default_state()
@@ -208,6 +227,7 @@ class TestFiresOnce(unittest.TestCase):
         self.assertIn("2026-09-13-sunday", state["posted_reminders"])
 
 
+@requires_tzdata
 class TestSuppression(unittest.TestCase):
     def test_disabled_by_config(self):
         posted, _, discord = fire(
@@ -243,17 +263,20 @@ class TestMessage(unittest.TestCase):
     def test_thursday_wording(self):
         self.assertIn("Thursday night game", render_reminder("thursday", 30))
 
-    def test_reports_the_real_remaining_time(self):
-        # Firing late in the window and still claiming "30 minutes" would be
-        # actively misleading.
-        _, _, discord = fire(ct(*SUNDAY_CDT, 11, 45).astimezone(UTC))
-        self.assertIn("15 minutes", discord.messages[0])
-
     def test_singular_minute(self):
         self.assertIn("1 minute for", render_reminder("sunday", 1))
 
     def test_message_is_short(self):
         self.assertLess(len(render_reminder("sunday", 30)), 100)
+
+
+@requires_tzdata
+class TestMessageFromALiveWindow(unittest.TestCase):
+    def test_reports_the_real_remaining_time(self):
+        # Firing late in the window and still claiming "30 minutes" would be
+        # actively misleading.
+        _, _, discord = fire(ct(*SUNDAY_CDT, 11, 45).astimezone(UTC))
+        self.assertIn("15 minutes", discord.messages[0])
 
 
 class TestTimezoneFailure(unittest.TestCase):
@@ -300,6 +323,7 @@ class TestTimezoneFailure(unittest.TestCase):
         self.assertEqual(posted, 0)
 
 
+@requires_tzdata
 class TestAlternateTimezone(unittest.TestCase):
     def test_eastern_league_fires_on_its_own_wall_clock(self):
         cfg = config(timezone_name="America/New_York")
