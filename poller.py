@@ -18,6 +18,8 @@ import tempfile
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 
@@ -864,3 +866,130 @@ def process_results(league, state: dict, discord: Discord) -> int:
 
     state["posted_weeks"] = posted_weeks
     return posted
+
+
+# --------------------------------------------------------------------------
+# Lineup lock reminders
+# --------------------------------------------------------------------------
+
+# weekday() is Monday=0 .. Sunday=6.
+THURSDAY = 3
+SUNDAY = 6
+
+REMINDER_SLOTS = {
+    "thursday": (THURSDAY, (19, 15), "the Thursday night game"),
+    "sunday": (SUNDAY, (12, 0), "the Sunday early games"),
+}
+
+REMINDER_LEAD_MINUTES = 30
+
+# The window opens a little earlier than the nominal 30-minute lead so a
+# 20-minute cron cannot step over it. A 30-minute window would be cutting it
+# fine: GitHub's scheduler is best-effort and routinely runs several minutes
+# late, which can stretch the real gap between runs past 30 minutes. 35 gives
+# 15 minutes of slack while still closing at kickoff -- the reminder is
+# useless once lineups have locked.
+REMINDER_WINDOW_MINUTES = 35
+
+# The league year is "active" across these weeks. Fantasy playoffs land
+# inside NFL weeks 1-18, so this covers the regular season and the postseason
+# without needing to know the league's playoff configuration.
+ACTIVE_WEEK_MIN = 1
+ACTIVE_WEEK_MAX = 18
+
+
+class TimezoneUnavailable(RuntimeError):
+    """The tz database could not resolve the configured TIMEZONE.
+
+    Bare Windows ships no tz database. This must never be swallowed: silently
+    skipping reminders forever is exactly the quiet failure this project is
+    built to avoid.
+    """
+
+
+def local_now(timezone_name: str, now: datetime | None = None) -> datetime:
+    """Current time in the configured zone.
+
+    ``now`` is injectable so tests can freeze the clock. Computing this at
+    runtime rather than baking UTC cron times is the whole point: Central
+    shifts under DST mid-season, and a fixed offset would drift an hour in
+    November without anything failing loudly.
+    """
+    try:
+        zone = ZoneInfo(timezone_name)
+    except (ZoneInfoNotFoundError, ValueError, OSError) as exc:
+        raise TimezoneUnavailable(
+            f"could not resolve timezone {timezone_name!r}: {type(exc).__name__}. "
+            "On Windows this usually means the 'tzdata' package is missing."
+        ) from None
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+    elif now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+
+    return now.astimezone(zone)
+
+
+def due_reminder(when: datetime):
+    """Return (key, slot, minutes_remaining) if inside a reminder window.
+
+    Returns None otherwise.
+    """
+    for slot, (weekday, (hour, minute), _) in REMINDER_SLOTS.items():
+        if when.weekday() != weekday:
+            continue
+
+        # Safe across DST: neither kickoff time falls in the transition hour.
+        kickoff = when.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        opens = kickoff - timedelta(minutes=REMINDER_WINDOW_MINUTES)
+
+        if opens <= when < kickoff:
+            remaining = int((kickoff - when).total_seconds() // 60)
+            return f"{when.date().isoformat()}-{slot}", slot, remaining
+
+    return None
+
+
+def render_reminder(slot: str, minutes_remaining: int) -> str:
+    _, _, description = REMINDER_SLOTS[slot]
+    unit = "minute" if minutes_remaining == 1 else "minutes"
+    return f"⏰ Lineups lock in {minutes_remaining} {unit} for {description}."
+
+
+def process_reminders(
+    config: Config,
+    state: dict,
+    discord: Discord,
+    *,
+    current_week=None,
+    now: datetime | None = None,
+) -> int:
+    """Post a lineup lock reminder if one is due. Returns 1 or 0.
+
+    Folded into the same run as everything else on purpose: a second workflow
+    with hardcoded UTC cron times would silently drift by an hour when
+    Central changes offset in November.
+    """
+    if not config.lineup_reminders:
+        return 0
+
+    week = _as_int(current_week, 0)
+    if not (ACTIVE_WEEK_MIN <= week <= ACTIVE_WEEK_MAX):
+        return 0
+
+    when = local_now(config.timezone, now)
+    due = due_reminder(when)
+    if due is None:
+        return 0
+
+    key, slot, remaining = due
+    posted_reminders = list(state.get("posted_reminders") or [])
+    if key in posted_reminders:
+        return 0
+
+    discord.post(render_reminder(slot, remaining))
+
+    posted_reminders.append(key)
+    state["posted_reminders"] = posted_reminders
+    return 1
