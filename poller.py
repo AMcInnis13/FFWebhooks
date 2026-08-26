@@ -15,8 +15,11 @@ import json
 import os
 import sys
 import tempfile
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+
+import requests
 
 # --------------------------------------------------------------------------
 # Configuration
@@ -328,3 +331,180 @@ def save_state(state: Mapping, path: str = STATE_PATH) -> dict:
         raise
 
     return payload
+
+
+# --------------------------------------------------------------------------
+# Discord
+# --------------------------------------------------------------------------
+
+DISCORD_CONTENT_LIMIT = 2000
+DEFAULT_USERNAME = "Fantasy Notifier"
+POST_DELAY_SECONDS = 0.75
+REQUEST_TIMEOUT_SECONDS = 15
+MAX_RATE_LIMIT_RETRIES = 5
+DEFAULT_RETRY_AFTER_SECONDS = 1.0
+MAX_RETRY_AFTER_SECONDS = 60.0
+
+
+class DiscordError(RuntimeError):
+    """A Discord post failed.
+
+    Messages raised from here must never contain the webhook URL -- it is a
+    credential, and Actions logs are public on a public repo.
+    """
+
+
+def split_content(text: str, limit: int = DISCORD_CONTENT_LIMIT) -> list[str]:
+    """Split text into chunks that fit Discord's content cap.
+
+    Breaks on line boundaries so a trade block or a scoreboard never tears
+    mid-line. A single line longer than the limit is hard-split, since there
+    is nowhere better to cut. Trailing blank lines are dropped; interior ones
+    are preserved because they carry formatting.
+    """
+    text = (text or "").rstrip("\n")
+    if not text.strip():
+        return []
+
+    chunks: list[str] = []
+    current = ""
+
+    for line in text.split("\n"):
+        while len(line) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(line[:limit])
+            line = line[limit:]
+
+        candidate = line if not current else current + "\n" + line
+        if len(candidate) <= limit:
+            current = candidate
+        else:
+            if current:
+                chunks.append(current)
+            current = line
+
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+class Discord:
+    """Posts messages to one Discord webhook.
+
+    ``session`` and ``sleep`` are injectable so tests never open a socket or
+    actually wait. ``label`` only tags dry-run output so the transactions and
+    results webhooks are distinguishable.
+    """
+
+    def __init__(
+        self,
+        webhook_url: str,
+        *,
+        username: str = DEFAULT_USERNAME,
+        dry_run: bool = False,
+        session=None,
+        sleep=time.sleep,
+        label: str = "",
+    ):
+        self.webhook_url = webhook_url
+        self.username = username
+        self.dry_run = dry_run
+        self.label = label
+        self._session = session
+        self._sleep = sleep
+        self._posted_any = False
+
+    @property
+    def session(self):
+        if self._session is None:
+            self._session = requests.Session()
+        return self._session
+
+    def post(self, content: str) -> int:
+        """Post content, splitting if needed. Returns the number of POSTs sent."""
+        chunks = split_content(content)
+        for index, chunk in enumerate(chunks):
+            self._post_chunk(chunk, index + 1, len(chunks))
+        return len(chunks)
+
+    def _post_chunk(self, content: str, index: int, total: int) -> None:
+        payload = {
+            "username": self.username,
+            "content": content,
+            # Without this a team called "@everyone", or a player name that
+            # happens to match a role, would ping the whole server.
+            "allowed_mentions": {"parse": []},
+        }
+
+        if self.dry_run:
+            tag = f" {self.label}" if self.label else ""
+            print(f"--- would POST to Discord{tag} [{index}/{total}, {len(content)} chars] ---")
+            print(content)
+            self._posted_any = True
+            return
+
+        for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
+            if self._posted_any:
+                self._sleep(POST_DELAY_SECONDS)
+
+            failure = None
+            try:
+                response = self.session.post(
+                    self.webhook_url, json=payload, timeout=REQUEST_TIMEOUT_SECONDS
+                )
+            except requests.RequestException as exc:
+                # Keep only the exception's type name. requests puts the full
+                # request URL -- the webhook credential -- into its message.
+                failure = type(exc).__name__
+
+            if failure is not None:
+                # Raised outside the except block on purpose. `raise ... from
+                # None` would still leave __context__ pointing at the original
+                # exception, and anything that walks it would find the token.
+                raise DiscordError(f"network error posting to Discord: {failure}")
+
+            self._posted_any = True
+            status = getattr(response, "status_code", 0)
+
+            if 200 <= status < 300:
+                return
+
+            if status == 429:
+                if attempt >= MAX_RATE_LIMIT_RETRIES:
+                    raise DiscordError(
+                        f"rate limited by Discord {attempt + 1} times in a row; giving up"
+                    )
+                wait = self._retry_after(response)
+                warn(f"rate limited by Discord; retrying in {wait:.2f}s")
+                self._sleep(wait)
+                continue
+
+            # Deliberately not response.raise_for_status(): its message
+            # includes the request URL, i.e. the webhook credential.
+            raise DiscordError(f"Discord returned HTTP {status}")
+
+    @staticmethod
+    def _retry_after(response) -> float:
+        """Seconds to wait, from the JSON body, else the header, else a default."""
+        value = None
+        try:
+            body = response.json()
+            if isinstance(body, dict):
+                value = body.get("retry_after")
+        except (ValueError, AttributeError):
+            pass
+
+        if value is None:
+            headers = getattr(response, "headers", None) or {}
+            value = headers.get("Retry-After")
+
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError):
+            seconds = DEFAULT_RETRY_AFTER_SECONDS
+
+        # Clamped so a bogus value cannot park the job until the Actions
+        # six-hour ceiling.
+        return max(0.0, min(seconds, MAX_RETRY_AFTER_SECONDS))
