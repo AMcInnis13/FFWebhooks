@@ -10,6 +10,7 @@ disk or printed. See CLAUDE.md section 6 for the full security contract.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -1045,3 +1046,233 @@ def render_bootstrap_message(activity_count: int, week_count: int) -> str:
         f"{week_count} completed {weeks} marked as already seen, "
         "so no backlog will be posted."
     )
+
+
+# --------------------------------------------------------------------------
+# Orchestration
+# --------------------------------------------------------------------------
+
+EXIT_OK = 0
+EXIT_FAILURE = 1
+
+ERROR_COOLDOWN_MS = 24 * 60 * 60 * 1000
+
+# Matched by class name rather than imported: these live in espn_api's
+# internals, and a name check keeps a library reshuffle from turning an auth
+# failure into an unhandled crash.
+AUTH_ERROR_NAMES = frozenset(
+    {"ESPNAccessDenied", "ESPNInvalidLeague", "ESPNUnknownError"}
+)
+
+ERROR_MESSAGES = {
+    "auth": (
+        "⚠️ ESPN rejected the notifier's credentials.\n"
+        "The ESPN_S2 and SWID cookies have likely expired. Re-pull them from a "
+        "browser and update the repository secrets — updates are paused until then."
+    ),
+    "league": (
+        "⚠️ The notifier could not reach ESPN.\n"
+        "It will retry on the next scheduled run."
+    ),
+    "timezone": (
+        "⚠️ The notifier could not resolve its configured timezone, so lineup "
+        "reminders are paused.\nCheck that TIMEZONE names a real zone."
+    ),
+    "transactions": (
+        "⚠️ The notifier hit an error while posting transactions.\n"
+        "Results and reminders are unaffected; it will retry on the next run."
+    ),
+    "results": (
+        "⚠️ The notifier hit an error while posting weekly results.\n"
+        "Transactions and reminders are unaffected; it will retry on the next run."
+    ),
+    "reminders": (
+        "⚠️ The notifier hit an error while checking lineup reminders.\n"
+        "Transactions and results are unaffected; it will retry on the next run."
+    ),
+    "bootstrap": (
+        "⚠️ The notifier could not complete its first-run setup.\n"
+        "It will try again on the next scheduled run."
+    ),
+}
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def is_auth_error(exc: BaseException) -> bool:
+    """Whether an exception means ESPN refused our credentials.
+
+    Note the message text is inspected only for classification and is never
+    logged or posted: espn_api builds these strings as
+    f"League {league_id} cannot be accessed ..." -- the raw text embeds the
+    league id.
+    """
+    if type(exc).__name__ in AUTH_ERROR_NAMES:
+        return True
+    text = str(exc).lower()
+    return any(token in text for token in ("401", "403", "access denied", "cookie"))
+
+
+def notify_error(kind: str, state: dict, discord: Discord, *, now_ms=None) -> bool:
+    """Post a rate-limited error notice. Returns True if one was sent.
+
+    Rate limited to once per day per kind: a persistent failure on a
+    20-minute cron would otherwise post 72 times a day, and a channel full
+    of identical warnings gets muted, which is just silence with extra steps.
+    """
+    now_ms = _now_ms() if now_ms is None else now_ms
+    notices = dict(state.get("error_notices") or {})
+
+    if now_ms - _as_int(notices.get(kind), 0) < ERROR_COOLDOWN_MS:
+        return False
+
+    try:
+        discord.post(ERROR_MESSAGES.get(kind, ERROR_MESSAGES["league"]))
+    except DiscordError as exc:
+        # If Discord itself is the problem there is nowhere left to report to.
+        # Say so on stderr and let the run finish rather than crashing here.
+        warn(f"could not report {kind} failure: {exc}")
+        return False
+
+    notices[kind] = now_ms
+    state["error_notices"] = notices
+    return True
+
+
+def build_league(config: Config):
+    """Connect to ESPN.
+
+    Imported lazily so that importing this module -- as the tests do -- does
+    not require espn_api to be importable.
+    """
+    from espn_api.football import League
+
+    return League(
+        league_id=config.league_id,
+        year=config.league_year,
+        espn_s2=config.espn_s2,
+        swid=config.swid,
+    )
+
+
+def _parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Post ESPN fantasy football updates to a Discord webhook."
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run the full pipeline against fixture data: no network, no state write.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(
+    argv=None,
+    *,
+    env=None,
+    league=None,
+    state_path: str = STATE_PATH,
+    discord=None,
+    results_discord=None,
+    now=None,
+    now_ms=None,
+) -> int:
+    """Entry point. Returns a process exit code.
+
+    Every keyword is injectable so tests can run the real orchestration
+    without a network, a clock, or a state file.
+    """
+    args = _parse_args(argv)
+
+    try:
+        config = load_config(env)
+    except ConfigError as exc:
+        # No validated webhook yet, so stderr is the only place to complain.
+        warn(str(exc))
+        return EXIT_FAILURE
+
+    state = load_state(state_path)
+
+    if discord is None:
+        discord = Discord(config.webhook_url, dry_run=args.dry_run, label="transactions")
+    if results_discord is None:
+        # Share the instance when both webhooks are the same URL so the
+        # inter-post throttle applies across features too.
+        results_discord = (
+            discord
+            if config.webhook_url_results == config.webhook_url
+            else Discord(
+                config.webhook_url_results, dry_run=args.dry_run, label="results"
+            )
+        )
+
+    failures: list[str] = []
+
+    if league is None:
+        try:
+            league = build_league(config)
+        except Exception as exc:
+            kind = "auth" if is_auth_error(exc) else "league"
+            # Only the type name: the raw message embeds the league id.
+            warn(f"could not connect to ESPN ({type(exc).__name__}); reporting as {kind}")
+            notify_error(kind, state, discord, now_ms=now_ms)
+            if not args.dry_run:
+                save_state(state, state_path)
+            return EXIT_FAILURE
+
+    if needs_bootstrap(state_path):
+        try:
+            bootstrap(league, state, discord)
+        except Exception as exc:
+            warn(f"bootstrap failed ({type(exc).__name__})")
+            notify_error("bootstrap", state, discord, now_ms=now_ms)
+            failures.append("bootstrap")
+    else:
+        # Each feature is isolated: one raising must never suppress the others.
+        try:
+            process_transactions(league, state, discord)
+        except Exception as exc:
+            warn(f"transactions failed ({type(exc).__name__})")
+            notify_error("transactions", state, discord, now_ms=now_ms)
+            failures.append("transactions")
+
+        try:
+            process_results(league, state, results_discord)
+        except Exception as exc:
+            warn(f"results failed ({type(exc).__name__})")
+            notify_error("results", state, discord, now_ms=now_ms)
+            failures.append("results")
+
+        try:
+            process_reminders(
+                config,
+                state,
+                discord,
+                current_week=getattr(league, "current_week", 0),
+                now=now,
+            )
+        except TimezoneUnavailable as exc:
+            # Raised rather than posted by design (T-008). Surfacing it here
+            # keeps reminders from failing silently for a whole season.
+            warn(str(exc))
+            notify_error("timezone", state, discord, now_ms=now_ms)
+            failures.append("reminders")
+        except Exception as exc:
+            warn(f"reminders failed ({type(exc).__name__})")
+            notify_error("reminders", state, discord, now_ms=now_ms)
+            failures.append("reminders")
+
+    if not args.dry_run:
+        save_state(state, state_path)
+
+    if failures:
+        warn(f"run completed with failures: {', '.join(failures)}")
+        return EXIT_FAILURE
+    return EXIT_OK
+
+
+if __name__ == "__main__":
+    sys.exit(main())
