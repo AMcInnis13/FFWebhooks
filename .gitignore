@@ -1,0 +1,113 @@
+# ---------------------------------------------------------------------------
+# Secrets and credentials
+#
+# This repo is intended to be PUBLIC. Nothing below should ever reach a commit.
+# The notifier reads every secret from environment variables injected by GitHub
+# Actions Secrets at runtime -- no credential is ever written to disk by design.
+# These rules are defense-in-depth for anything created by hand while testing.
+# ---------------------------------------------------------------------------
+
+# Environment files
+.env
+.env.*
+*.env
+!.env.example
+
+# ESPN cookies (ESPN_S2 / SWID) pulled from the browser
+cookies.txt
+cookies.json
+espn_cookies*
+swid*
+*.cookies
+
+# Discord webhook URLs -- a webhook URL is a credential; anyone holding it can
+# post to your channel. Never paste one into a tracked file.
+webhook*.txt
+webhook*.json
+discord_webhook*
+
+# Generic credential material
+secrets/
+secrets.*
+credentials.*
+*.pem
+*.key
+*.p12
+*.pfx
+*_rsa
+*_rsa.pub
+.netrc
+
+# Local overrides that tend to accumulate real values
+config.local.*
+local_settings.py
+settings.local.json
+
+# ---------------------------------------------------------------------------
+# Planning / working files -- local only, not part of the published repo
+# ---------------------------------------------------------------------------
+CLAUDE.md
+TASKS.md
+status.md
+.claude/
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# ---------------------------------------------------------------------------
+# Test artifacts that may contain real league data
+# ---------------------------------------------------------------------------
+tests/fixtures/real_*
+tests/fixtures/live_*
+*.live.json
+
+# ---------------------------------------------------------------------------
+# Logs and scratch output
+# ---------------------------------------------------------------------------
+*.log
+logs/
+dry-run-output.txt
+scratch/
+tmp/
+
+# ---------------------------------------------------------------------------
+# Editors and OS
+# ---------------------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------------------------------------------------------------------------
+# NOT ignored, deliberately:
+#   state.json  -- the notifier's only persistence. The workflow commits it back
+#                  each run, so ignoring it would re-bootstrap every single run.
+#                  It must contain ONLY: last_activity_ms, opaque fingerprints,
+#                  week numbers, and reminder keys. Never player names, scores,
+#                  team names, league id, or anything read from a cookie.
+# ---------------------------------------------------------------------------
