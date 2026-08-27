@@ -41,6 +41,24 @@ REQUIRED_VARS = (
 _TRUE_VALUES = frozenset({"true", "1", "yes", "y", "on"})
 _FALSE_VALUES = frozenset({"false", "0", "no", "n", "off"})
 
+# Message categories, each routable to its own Discord channel.
+CATEGORY_MAIN = "main"
+CATEGORY_TRADES = "trades"
+CATEGORY_ROSTER = "roster"
+CATEGORY_RESULTS = "results"
+
+# Lineup reminders, the bootstrap confirmation, and every error notice stay on
+# CATEGORY_MAIN. Errors especially: a failure routed to a quiet side channel
+# is barely better than no failure message at all.
+CATEGORIES = (CATEGORY_MAIN, CATEGORY_TRADES, CATEGORY_ROSTER, CATEGORY_RESULTS)
+
+CATEGORY_LABELS = {
+    CATEGORY_MAIN: "main",
+    CATEGORY_TRADES: "trades",
+    CATEGORY_ROSTER: "roster moves",
+    CATEGORY_RESULTS: "results",
+}
+
 
 class ConfigError(RuntimeError):
     """Environment configuration is missing or malformed."""
@@ -64,6 +82,22 @@ class Config:
     webhook_url_results: str = field(repr=False)
     timezone: str
     lineup_reminders: bool
+    # Optional per-category destinations. Each falls back to webhook_url, so
+    # an unconfigured install behaves exactly as it did before routing existed.
+    webhook_url_trades: str = field(repr=False, default="")
+    webhook_url_roster: str = field(repr=False, default="")
+
+    def webhook_for(self, category: str) -> str:
+        """The webhook URL a message category should be posted to.
+
+        Unknown categories fall back to the main webhook rather than raising:
+        a routing mistake should misfile a message, never drop it.
+        """
+        return {
+            CATEGORY_TRADES: self.webhook_url_trades or self.webhook_url,
+            CATEGORY_ROSTER: self.webhook_url_roster or self.webhook_url,
+            CATEGORY_RESULTS: self.webhook_url_results or self.webhook_url,
+        }.get(category, self.webhook_url)
 
 
 def normalize_swid(raw: str) -> str:
@@ -132,6 +166,8 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
 
     webhook_url = env["DISCORD_WEBHOOK_URL"].strip()
     results_url = (env.get("DISCORD_WEBHOOK_URL_RESULTS") or "").strip()
+    trades_url = (env.get("DISCORD_WEBHOOK_URL_TRADES") or "").strip()
+    roster_url = (env.get("DISCORD_WEBHOOK_URL_ROSTER") or "").strip()
 
     return Config(
         league_id=_require_int(env["LEAGUE_ID"], "LEAGUE_ID", redact=True),
@@ -140,6 +176,8 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         swid=normalize_swid(env["SWID"]),
         webhook_url=webhook_url,
         webhook_url_results=results_url or webhook_url,
+        webhook_url_trades=trades_url or webhook_url,
+        webhook_url_roster=roster_url or webhook_url,
         timezone=(env.get("TIMEZONE") or "").strip() or DEFAULT_TIMEZONE,
         lineup_reminders=parse_bool(
             env.get("LINEUP_REMINDERS"), True, var_name="LINEUP_REMINDERS"
@@ -511,6 +549,51 @@ class Discord:
         # Clamped so a bogus value cannot park the job until the Actions
         # six-hour ceiling.
         return max(0.0, min(seconds, MAX_RETRY_AFTER_SECONDS))
+
+
+class DiscordRouter:
+    """Maps message categories to the channel each should be posted to.
+
+    One ``Discord`` instance per *distinct* URL, shared by every category
+    pointing at the same channel. That sharing is the whole point: the
+    inter-post throttle lives on the instance, so four separate instances
+    aimed at one channel would each believe they were posting first and could
+    burst straight into a 429.
+    """
+
+    def __init__(self, config: Config, *, dry_run: bool = False, session=None, sleep=None):
+        self._by_url: dict[str, Discord] = {}
+        self._by_category: dict[str, Discord] = {}
+
+        for category in CATEGORIES:
+            url = config.webhook_for(category)
+            if url not in self._by_url:
+                kwargs = {"dry_run": dry_run, "label": CATEGORY_LABELS.get(category, category)}
+                if session is not None:
+                    kwargs["session"] = session
+                if sleep is not None:
+                    kwargs["sleep"] = sleep
+                self._by_url[url] = Discord(url, **kwargs)
+            self._by_category[category] = self._by_url[url]
+
+    def for_category(self, category: str) -> Discord:
+        """The poster for a category; unknown categories fall back to main."""
+        return self._by_category.get(category, self._by_category[CATEGORY_MAIN])
+
+    def post(self, category: str, content: str) -> int:
+        return self.for_category(category).post(content)
+
+    @property
+    def main(self) -> Discord:
+        return self._by_category[CATEGORY_MAIN]
+
+    @property
+    def channel_count(self) -> int:
+        """How many distinct channels are actually in use."""
+        return len(self._by_url)
+
+    def shares_channel(self, first: str, second: str) -> bool:
+        return self.for_category(first) is self.for_category(second)
 
 
 # --------------------------------------------------------------------------

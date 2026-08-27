@@ -18,6 +18,8 @@ from poller import (
 FAKE_SWID_INNER = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
 FAKE_WEBHOOK = "https://example.invalid/webhook/main"
 FAKE_WEBHOOK_RESULTS = "https://example.invalid/webhook/results"
+FAKE_WEBHOOK_TRADES = "https://example.invalid/webhook/trades"
+FAKE_WEBHOOK_ROSTER = "https://example.invalid/webhook/roster"
 FAKE_S2 = "FAKE_ESPN_S2_COOKIE_VALUE"
 
 
@@ -154,6 +156,63 @@ class TestWebhookFallback(unittest.TestCase):
         cfg = load_config(env(DISCORD_WEBHOOK_URL_RESULTS=FAKE_WEBHOOK_RESULTS))
         self.assertEqual(cfg.webhook_url, FAKE_WEBHOOK)
         self.assertEqual(cfg.webhook_url_results, FAKE_WEBHOOK_RESULTS)
+
+
+class TestPerCategoryWebhooks(unittest.TestCase):
+    """Each category routes to its own channel, or falls back to the main one."""
+
+    def test_all_categories_default_to_the_main_webhook(self):
+        # An install that configures nothing extra must behave exactly as it
+        # did before routing existed.
+        cfg = load_config(env())
+        for category in ("main", "trades", "roster", "results"):
+            with self.subTest(category=category):
+                self.assertEqual(cfg.webhook_for(category), FAKE_WEBHOOK)
+
+    def test_each_category_can_be_routed_separately(self):
+        cfg = load_config(
+            env(
+                DISCORD_WEBHOOK_URL_TRADES=FAKE_WEBHOOK_TRADES,
+                DISCORD_WEBHOOK_URL_ROSTER=FAKE_WEBHOOK_ROSTER,
+                DISCORD_WEBHOOK_URL_RESULTS=FAKE_WEBHOOK_RESULTS,
+            )
+        )
+        self.assertEqual(cfg.webhook_for("trades"), FAKE_WEBHOOK_TRADES)
+        self.assertEqual(cfg.webhook_for("roster"), FAKE_WEBHOOK_ROSTER)
+        self.assertEqual(cfg.webhook_for("results"), FAKE_WEBHOOK_RESULTS)
+        self.assertEqual(cfg.webhook_for("main"), FAKE_WEBHOOK)
+
+    def test_partial_configuration_falls_back_per_category(self):
+        cfg = load_config(env(DISCORD_WEBHOOK_URL_TRADES=FAKE_WEBHOOK_TRADES))
+        self.assertEqual(cfg.webhook_for("trades"), FAKE_WEBHOOK_TRADES)
+        self.assertEqual(cfg.webhook_for("roster"), FAKE_WEBHOOK)
+        self.assertEqual(cfg.webhook_for("results"), FAKE_WEBHOOK)
+
+    def test_blank_values_fall_back(self):
+        cfg = load_config(env(DISCORD_WEBHOOK_URL_TRADES="   ", DISCORD_WEBHOOK_URL_ROSTER=""))
+        self.assertEqual(cfg.webhook_for("trades"), FAKE_WEBHOOK)
+        self.assertEqual(cfg.webhook_for("roster"), FAKE_WEBHOOK)
+
+    def test_unknown_category_falls_back_rather_than_raising(self):
+        # Misfiling a message is recoverable; dropping one is not.
+        self.assertEqual(load_config(env()).webhook_for("nonsense"), FAKE_WEBHOOK)
+
+    def test_reminders_and_errors_are_not_separately_routable(self):
+        # They ride CATEGORY_MAIN on purpose: an error sent to a quiet side
+        # channel is barely better than no error at all.
+        cfg = load_config(env(DISCORD_WEBHOOK_URL_TRADES=FAKE_WEBHOOK_TRADES))
+        self.assertEqual(cfg.webhook_for("main"), FAKE_WEBHOOK)
+
+    def test_new_webhooks_are_hidden_from_repr(self):
+        cfg = load_config(
+            env(
+                DISCORD_WEBHOOK_URL_TRADES=FAKE_WEBHOOK_TRADES,
+                DISCORD_WEBHOOK_URL_ROSTER=FAKE_WEBHOOK_ROSTER,
+            )
+        )
+        rendered = repr(cfg)
+        self.assertNotIn(FAKE_WEBHOOK_TRADES, rendered)
+        self.assertNotIn(FAKE_WEBHOOK_ROSTER, rendered)
 
 
 class TestLineupReminders(unittest.TestCase):

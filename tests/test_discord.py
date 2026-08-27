@@ -16,8 +16,10 @@ from poller import (
     MAX_RATE_LIMIT_RETRIES,
     MAX_RETRY_AFTER_SECONDS,
     POST_DELAY_SECONDS,
+    Config,
     Discord,
     DiscordError,
+    DiscordRouter,
     split_content,
 )
 
@@ -368,6 +370,129 @@ class TestDryRun(unittest.TestCase):
             poster.post("a")
             poster.post("b")
         self.assertEqual(sleeps, [])
+
+
+class TestDiscordRouter(unittest.TestCase):
+    """Routing categories to channels, and sharing instances per channel."""
+
+    MAIN = "https://example.invalid/hook/main"
+    TRADES = "https://example.invalid/hook/trades"
+    ROSTER = "https://example.invalid/hook/roster"
+    RESULTS = "https://example.invalid/hook/results"
+
+    def config(self, **overrides):
+        values = {
+            "league_id": 1234567,
+            "league_year": 2026,
+            "espn_s2": "FAKE",
+            "swid": "{FAKE}",
+            "webhook_url": self.MAIN,
+            "webhook_url_results": self.MAIN,
+            "webhook_url_trades": self.MAIN,
+            "webhook_url_roster": self.MAIN,
+            "timezone": "America/Chicago",
+            "lineup_reminders": True,
+        }
+        values.update(overrides)
+        return Config(**values)
+
+    def router(self, config=None):
+        return DiscordRouter(
+            config or self.config(), session=FakeSession(), sleep=lambda _: None
+        )
+
+    def test_single_channel_setup_uses_one_instance(self):
+        # The throttle lives on the instance. Four instances aimed at one
+        # channel would each think they were posting first and could burst
+        # straight into a 429.
+        router = self.router()
+        self.assertEqual(router.channel_count, 1)
+        for category in ("trades", "roster", "results"):
+            with self.subTest(category=category):
+                self.assertIs(router.for_category(category), router.main)
+
+    def test_fully_split_setup_uses_four_instances(self):
+        router = self.router(
+            self.config(
+                webhook_url_trades=self.TRADES,
+                webhook_url_roster=self.ROSTER,
+                webhook_url_results=self.RESULTS,
+            )
+        )
+        self.assertEqual(router.channel_count, 4)
+        urls = {
+            category: router.for_category(category).webhook_url
+            for category in ("main", "trades", "roster", "results")
+        }
+        self.assertEqual(
+            urls,
+            {
+                "main": self.MAIN,
+                "trades": self.TRADES,
+                "roster": self.ROSTER,
+                "results": self.RESULTS,
+            },
+        )
+
+    def test_categories_sharing_a_url_share_one_instance(self):
+        router = self.router(
+            self.config(webhook_url_trades=self.TRADES, webhook_url_roster=self.TRADES)
+        )
+        self.assertEqual(router.channel_count, 2)
+        self.assertTrue(router.shares_channel("trades", "roster"))
+        self.assertFalse(router.shares_channel("trades", "main"))
+
+    def test_throttle_is_shared_across_categories_on_one_channel(self):
+        sleeps = []
+        router = DiscordRouter(self.config(), session=FakeSession(), sleep=sleeps.append)
+        router.post("trades", "a")
+        router.post("roster", "b")
+        router.post("results", "c")
+        # First post never sleeps; the next two must, because they land in
+        # the same channel.
+        self.assertEqual(len(sleeps), 2)
+
+    def test_separate_channels_do_not_throttle_each_other(self):
+        sleeps = []
+        router = DiscordRouter(
+            self.config(webhook_url_trades=self.TRADES, webhook_url_roster=self.ROSTER),
+            session=FakeSession(),
+            sleep=sleeps.append,
+        )
+        router.post("trades", "a")
+        router.post("roster", "b")
+        self.assertEqual(sleeps, [])
+
+    def test_posts_reach_the_right_url(self):
+        session = FakeSession()
+        router = DiscordRouter(
+            self.config(webhook_url_trades=self.TRADES),
+            session=session,
+            sleep=lambda _: None,
+        )
+        router.post("trades", "trade message")
+        router.post("results", "results message")
+        self.assertEqual(session.calls[0]["url"], self.TRADES)
+        self.assertEqual(session.calls[1]["url"], self.MAIN)
+
+    def test_unknown_category_goes_to_main(self):
+        router = self.router(self.config(webhook_url_trades=self.TRADES))
+        self.assertIs(router.for_category("nonsense"), router.main)
+
+    def test_dry_run_propagates_to_every_channel(self):
+        router = DiscordRouter(
+            self.config(webhook_url_trades=self.TRADES), dry_run=True, sleep=lambda _: None
+        )
+        for category in ("main", "trades", "roster", "results"):
+            with self.subTest(category=category):
+                self.assertTrue(router.for_category(category).dry_run)
+
+    def test_each_channel_is_labelled_for_dry_run_output(self):
+        router = self.router(self.config(webhook_url_trades=self.TRADES))
+        self.assertTrue(router.for_category("trades").label)
+        self.assertNotEqual(
+            router.for_category("trades").label, router.main.label
+        )
 
 
 if __name__ == "__main__":
