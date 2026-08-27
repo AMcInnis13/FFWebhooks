@@ -63,8 +63,8 @@ class TestFileBasics(WorkflowTestCase):
 
 
 class TestTriggers(WorkflowTestCase):
-    def test_runs_every_twenty_minutes(self):
-        self.assertRegex(self.code_text(), r'cron:\s*"\*/20 ')
+    def test_runs_every_five_minutes(self):
+        self.assertRegex(self.code_text(), r'cron:\s*"\*/5 ')
 
     def test_cron_is_restricted_to_september_through_january(self):
         match = re.search(r'cron:\s*"([^"]+)"', self.code_text())
@@ -101,7 +101,7 @@ class TestTriggers(WorkflowTestCase):
     def test_explains_how_to_widen_for_dynasty_leagues(self):
         # This one is meant to be satisfied by a comment.
         self.assertIn("DYNASTY", self.text.upper())
-        self.assertRegex(self.text, r'cron:\s*"\*/20 \* \* \* \*"')
+        self.assertRegex(self.text, r'cron:\s*"\*/5 \* \* \* \*"')
 
 
 class TestPermissionsAndConcurrency(WorkflowTestCase):

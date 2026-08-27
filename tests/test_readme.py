@@ -236,7 +236,7 @@ class TestOperationalGuidance(ReadmeTestCase):
 
     def test_documents_the_dynasty_cron_widening(self):
         self.assertIn("Dynasty", self.text)
-        self.assertRegex(self.text, r'cron:\s*"\*/20 \* \* \* \*"')
+        self.assertRegex(self.text, r'cron:\s*"\*/5 \* \* \* \*"')
 
     def test_documents_local_testing(self):
         self.assertIn("--dry-run", self.text)

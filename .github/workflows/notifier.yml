@@ -2,24 +2,29 @@ name: Fantasy notifier
 
 on:
   schedule:
-    # Every 20 minutes, September through January only.
+    # Every 5 minutes, September through January only.
     #
-    # The month field (9-12,1) keeps the job from burning runs in the
-    # offseason. Public repositories get unlimited Actions minutes, so this
-    # is about noise rather than cost -- but a job that cannot do anything
-    # useful should not be waking up 2,000 times a month.
+    # Five minutes is GitHub's documented minimum interval. On a public repo
+    # Actions minutes are unlimited, so the cost of this cadence is not
+    # billing -- it is roughly four times the request volume against ESPN's
+    # unofficial API. If ESPN ever starts refusing requests, widening this
+    # back to */10 or */20 is the first thing to try.
+    #
+    # The month field (9-12,1) keeps the job from waking up in the offseason.
+    # Note that a league drafting in August gets no coverage until Sept 1;
+    # add 8 to the month list if you want draft-day transactions posted live.
     #
     # DYNASTY LEAGUES: rookie drafts and offseason trades happen year round.
     # To widen this, change the month field to `*`:
-    #     - cron: "*/20 * * * *"
+    #     - cron: "*/5 * * * *"
     # Nothing else needs to change; the script is already safe to run in the
     # offseason (no completed weeks to post, and reminders self-suppress
     # outside weeks 1-18).
     #
-    # GitHub's scheduler is best-effort and can run several minutes late.
-    # The lineup reminder window is deliberately wider than this interval to
-    # absorb that; see REMINDER_WINDOW_MINUTES in poller.py.
-    - cron: "*/20 * * 9-12,1 *"
+    # GitHub's scheduler is best-effort, runs late under load, and drops
+    # short-interval runs first -- expect fewer than 12 an hour in practice.
+    # Nothing depends on the cadence: dedup is content-hashed, not timed.
+    - cron: "*/5 * * 9-12,1 *"
 
   # Manual trigger, for the first-run smoke test and for debugging.
   workflow_dispatch:

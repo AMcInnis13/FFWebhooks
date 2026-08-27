@@ -1019,12 +1019,12 @@ REMINDER_SLOTS = {
 
 REMINDER_LEAD_MINUTES = 30
 
-# The window opens a little earlier than the nominal 30-minute lead so a
-# 20-minute cron cannot step over it. A 30-minute window would be cutting it
-# fine: GitHub's scheduler is best-effort and routinely runs several minutes
-# late, which can stretch the real gap between runs past 30 minutes. 35 gives
-# 15 minutes of slack while still closing at kickoff -- the reminder is
-# useless once lineups have locked.
+# The window opens a little earlier than the nominal 30-minute lead so the
+# cron cannot step over it. Sized for a 20-minute cron with 15 minutes of
+# slack, and kept at 35 after the move to 5 minutes: GitHub's scheduler is
+# best-effort and drops short-interval runs first, so the real gap between
+# runs can be far longer than the configured interval. The window still
+# closes at kickoff -- the reminder is useless once lineups have locked.
 REMINDER_WINDOW_MINUTES = 35
 
 # The league year is "active" across these weeks. Fantasy playoffs land
@@ -1254,8 +1254,8 @@ def notify_error(kind: str, state: dict, discord: Discord, *, now_ms=None) -> bo
     """Post a rate-limited error notice. Returns True if one was sent.
 
     Rate limited to once per day per kind: a persistent failure on a
-    20-minute cron would otherwise post 72 times a day, and a channel full
-    of identical warnings gets muted, which is just silence with extra steps.
+    5-minute cron would otherwise post nearly 300 times a day, and a channel
+    full of identical warnings gets muted, which is silence with extra steps.
     """
     now_ms = _now_ms() if now_ms is None else now_ms
     notices = dict(state.get("error_notices") or {})

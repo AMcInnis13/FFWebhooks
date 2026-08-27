@@ -170,7 +170,14 @@ class TestDaylightSaving(unittest.TestCase):
 
 @requires_tzdata
 class TestCronCoverage(unittest.TestCase):
-    """A 20-minute cron must never step over the window."""
+    """The cron must never step over the window.
+
+    Simulated at 20-minute steps even though the workflow now runs every 5.
+    That is deliberate: 20 minutes is the sparser, harder case, and GitHub
+    drops short-interval runs first under load, so the real gap between runs
+    can be far wider than the configured interval. Passing here means passing
+    at any denser cadence.
+    """
 
     def simulate_day(self, date, start_minute_offset):
         """Run every 20 minutes through the day; count reminders posted."""
@@ -194,8 +201,9 @@ class TestCronCoverage(unittest.TestCase):
             with self.subTest(offset=offset):
                 self.assertEqual(self.simulate_day(SUNDAY_CST, offset), 1)
 
-    def test_window_is_wider_than_the_cron_interval(self):
-        # 20-minute cron plus GitHub's best-effort scheduling delay.
+    def test_window_absorbs_a_sparse_cron(self):
+        # Still checked against 20 rather than 5: the window has to survive
+        # GitHub skipping runs, not just the configured interval.
         self.assertGreater(REMINDER_WINDOW_MINUTES, 20)
 
 

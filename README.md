@@ -3,7 +3,7 @@
 Posts your ESPN fantasy league's transactions, weekly results, and lineup lock reminders to a Discord
 channel. Runs entirely on GitHub Actions cron — no server, no always-on process, no Discord bot.
 
-It is a one-shot Python script polled every 20 minutes. All persistence lives in `state.json`, which the
+It is a one-shot Python script polled every 5 minutes. All persistence lives in `state.json`, which the
 workflow commits back to the repository.
 
 ## What it posts
@@ -44,9 +44,9 @@ Lineup lock reminders, 30 minutes before Thursday and Sunday kickoff:
 
 **Recommended: make this repository public.**
 
-Private repositories get 2,000 free Actions minutes per month. A run every 20 minutes is roughly 2,160
-runs a month, so a private repo will exhaust its free minutes and the notifier will stop. Public
-repositories get unlimited Actions minutes.
+Private repositories get 2,000 free Actions minutes per month. A run every 5 minutes is roughly 8,600
+runs a month, so a private repo would exhaust its free minutes within days and the notifier would stop.
+Public repositories get unlimited Actions minutes.
 
 Secrets are encrypted either way — a public repo does **not** expose your cookies or webhook URL. What
 does become publicly visible is `state.json`, so it is worth knowing exactly what that file contains:
@@ -201,14 +201,18 @@ If the run fails, see [Troubleshooting](#troubleshooting).
 
 ## How it works
 
-**Schedule.** The workflow runs every 20 minutes, September through January. The cron month field
-(`9-12,1`) keeps it from waking up pointlessly in the offseason.
+**Schedule.** The workflow runs every 5 minutes, September through January. Five minutes is GitHub's
+minimum interval, and its scheduler drops short-interval runs first under load, so expect somewhat
+fewer in practice. Nothing depends on the cadence -- deduplication is content-hashed, not timed.
+
+The cron month field (`9-12,1`) keeps it from waking up in the offseason. Note that a league drafting
+in August gets no coverage until 1 September; add `8` to the month list for draft-day transactions.
 
 **Dynasty leagues.** Rookie drafts and offseason trades happen year round. To run continuously, edit
 `.github/workflows/notifier.yml` and change the cron month field to `*`:
 
 ```yaml
-- cron: "*/20 * * * *"
+- cron: "*/5 * * * *"
 ```
 
 Nothing else needs changing — the script is already safe to run in the offseason.
