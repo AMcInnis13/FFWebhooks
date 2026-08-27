@@ -399,6 +399,13 @@ MAX_RATE_LIMIT_RETRIES = 5
 DEFAULT_RETRY_AFTER_SECONDS = 1.0
 MAX_RETRY_AFTER_SECONDS = 60.0
 
+# Transient on Discord's side: retrying is the correct response. 4xx is
+# deliberately excluded -- a 404 webhook or a malformed payload will never
+# succeed, and retrying only delays a real error.
+RETRYABLE_STATUSES = frozenset({408, 500, 502, 503, 504})
+MAX_SERVER_ERROR_RETRIES = 3
+SERVER_ERROR_BACKOFF_SECONDS = 1.0
+
 
 class DiscordError(RuntimeError):
     """A Discord post failed.
@@ -499,7 +506,12 @@ class Discord:
             self._posted_any = True
             return
 
-        for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
+        # Separate budgets so a burst of rate limits cannot consume the
+        # allowance for server errors, or vice versa.
+        rate_limit_attempts = 0
+        server_error_attempts = 0
+
+        while True:
             if self._posted_any:
                 self._sleep(POST_DELAY_SECONDS)
 
@@ -526,12 +538,26 @@ class Discord:
                 return
 
             if status == 429:
-                if attempt >= MAX_RATE_LIMIT_RETRIES:
+                if rate_limit_attempts >= MAX_RATE_LIMIT_RETRIES:
                     raise DiscordError(
-                        f"rate limited by Discord {attempt + 1} times in a row; giving up"
+                        f"rate limited by Discord {rate_limit_attempts + 1} times "
+                        "in a row; giving up"
                     )
+                rate_limit_attempts += 1
                 wait = self._retry_after(response)
                 warn(f"rate limited by Discord; retrying in {wait:.2f}s")
+                self._sleep(wait)
+                continue
+
+            if status in RETRYABLE_STATUSES:
+                if server_error_attempts >= MAX_SERVER_ERROR_RETRIES:
+                    raise DiscordError(
+                        f"Discord returned HTTP {status} on "
+                        f"{server_error_attempts + 1} consecutive attempts; giving up"
+                    )
+                wait = SERVER_ERROR_BACKOFF_SECONDS * (2 ** server_error_attempts)
+                server_error_attempts += 1
+                warn(f"Discord returned HTTP {status}; retrying in {wait:.2f}s")
                 self._sleep(wait)
                 continue
 

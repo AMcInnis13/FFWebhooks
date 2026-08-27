@@ -15,7 +15,9 @@ from poller import (
     DISCORD_CONTENT_LIMIT,
     MAX_RATE_LIMIT_RETRIES,
     MAX_RETRY_AFTER_SECONDS,
+    MAX_SERVER_ERROR_RETRIES,
     POST_DELAY_SECONDS,
+    RETRYABLE_STATUSES,
     Config,
     Discord,
     DiscordError,
@@ -259,16 +261,18 @@ class TestRateLimiting(unittest.TestCase):
 
 
 class TestErrorHandling(unittest.TestCase):
-    def test_non_2xx_raises(self):
-        for status in (400, 401, 403, 404, 500, 503):
+    def test_client_errors_raise(self):
+        for status in (400, 401, 403, 404):
             with self.subTest(status=status):
                 poster, _ = make_discord(responses=[FakeResponse(status)])
                 with self.assertRaises(DiscordError) as ctx:
                     poster.post("hello")
                 self.assertIn(str(status), str(ctx.exception))
 
-    def test_non_2xx_is_not_retried(self):
-        poster, _ = make_discord(responses=[FakeResponse(500), FakeResponse(204)])
+    def test_client_errors_are_not_retried(self):
+        # A 404 webhook or a malformed payload will never succeed; retrying
+        # only delays a real error.
+        poster, _ = make_discord(responses=[FakeResponse(404), FakeResponse(204)])
         with self.assertRaises(DiscordError):
             poster.post("hello")
         self.assertEqual(len(poster._session.calls), 1)
@@ -292,6 +296,61 @@ class TestErrorHandling(unittest.TestCase):
             poster.post("hello")
 
 
+class TestTransientServerErrors(unittest.TestCase):
+    """Regression: a live run failed on a 503 that would have self-healed."""
+
+    def test_503_then_200_recovers(self):
+        poster, sleeps = make_discord(responses=[FakeResponse(503), FakeResponse(204)])
+        self.assertEqual(poster.post("hello"), 1)
+        self.assertEqual(len(poster._session.calls), 2)
+        self.assertTrue(any(s > 0 for s in sleeps))
+
+    def test_every_transient_status_is_retried(self):
+        for status in sorted(RETRYABLE_STATUSES):
+            with self.subTest(status=status):
+                poster, _ = make_discord(responses=[FakeResponse(status), FakeResponse(204)])
+                self.assertEqual(poster.post("hello"), 1)
+                self.assertEqual(len(poster._session.calls), 2)
+
+    def test_repeated_transient_errors_recover_within_budget(self):
+        responses = [FakeResponse(503)] * MAX_SERVER_ERROR_RETRIES + [FakeResponse(204)]
+        poster, _ = make_discord(responses=responses)
+        self.assertEqual(poster.post("hello"), 1)
+
+    def test_persistent_transient_error_eventually_gives_up(self):
+        responses = [FakeResponse(503)] * (MAX_SERVER_ERROR_RETRIES + 1)
+        poster, _ = make_discord(responses=responses)
+        with self.assertRaises(DiscordError) as ctx:
+            poster.post("hello")
+        self.assertIn("503", str(ctx.exception))
+        self.assertIn("giving up", str(ctx.exception))
+
+    def test_backoff_grows(self):
+        responses = [FakeResponse(503)] * MAX_SERVER_ERROR_RETRIES + [FakeResponse(204)]
+        poster, sleeps = make_discord(responses=responses)
+        poster.post("hello")
+        backoffs = [s for s in sleeps if s not in (POST_DELAY_SECONDS,)]
+        self.assertEqual(backoffs, sorted(backoffs))
+        self.assertGreater(backoffs[-1], backoffs[0])
+
+    def test_rate_limit_and_server_error_budgets_are_separate(self):
+        # A burst of 429s must not consume the allowance for server errors.
+        responses = (
+            [FakeResponse(429, {"retry_after": 0})] * MAX_RATE_LIMIT_RETRIES
+            + [FakeResponse(503)] * MAX_SERVER_ERROR_RETRIES
+            + [FakeResponse(204)]
+        )
+        poster, _ = make_discord(responses=responses)
+        self.assertEqual(poster.post("hello"), 1)
+
+    def test_give_up_message_does_not_leak_the_url(self):
+        responses = [FakeResponse(503)] * (MAX_SERVER_ERROR_RETRIES + 1)
+        poster, _ = make_discord(responses=responses)
+        with self.assertRaises(DiscordError) as ctx:
+            poster.post("hello")
+        self.assertNotIn("SUPER-SECRET-TOKEN", str(ctx.exception))
+
+
 class TestWebhookUrlNeverLeaks(unittest.TestCase):
     """The webhook URL is a credential and Actions logs are public."""
 
@@ -303,7 +362,9 @@ class TestWebhookUrlNeverLeaks(unittest.TestCase):
         self.assertNotIn(FAKE_WEBHOOK, rendered)
 
     def test_http_error_message_is_clean(self):
-        poster, _ = make_discord(responses=[FakeResponse(500)])
+        # 404, not 500: transient statuses are retried now, so a 500 would
+        # succeed on the second attempt and never reach the error path.
+        poster, _ = make_discord(responses=[FakeResponse(404)])
         with self.assertRaises(DiscordError) as ctx:
             poster.post("hello")
         self.assert_clean(ctx.exception)
