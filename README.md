@@ -201,12 +201,14 @@ If the run fails, see [Troubleshooting](#troubleshooting).
 
 ## How it works
 
-**Schedule.** The workflow runs every 5 minutes, September through January. Five minutes is GitHub's
+**Schedule.** The workflow runs every 5 minutes, August through January. Five minutes is GitHub's
 minimum interval, and its scheduler drops short-interval runs first under load, so expect somewhat
 fewer in practice. Nothing depends on the cadence -- deduplication is content-hashed, not timed.
 
-The cron month field (`9-12,1`) keeps it from waking up in the offseason. Note that a league drafting
-in August gets no coverage until 1 September; add `8` to the month list for draft-day transactions.
+The cron month field (`8-12,1`) keeps it from waking up in the offseason. August is included so that
+draft-day trades and waiver claims post live — most leagues draft in late August, and without it those
+would sit unposted until September and then arrive all at once. If your league drafts earlier, add the
+relevant month.
 
 **Dynasty leagues.** Rookie drafts and offseason trades happen year round. To run continuously, edit
 `.github/workflows/notifier.yml` and change the cron month field to `*`:

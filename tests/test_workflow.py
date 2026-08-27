@@ -66,7 +66,7 @@ class TestTriggers(WorkflowTestCase):
     def test_runs_every_five_minutes(self):
         self.assertRegex(self.code_text(), r'cron:\s*"\*/5 ')
 
-    def test_cron_is_restricted_to_september_through_january(self):
+    def test_cron_is_restricted_to_the_season(self):
         match = re.search(r'cron:\s*"([^"]+)"', self.code_text())
         self.assertIsNotNone(match, "no cron expression found")
         fields = match.group(1).split()
@@ -74,7 +74,10 @@ class TestTriggers(WorkflowTestCase):
 
         month_field = fields[3]
         self.assertNotEqual(month_field, "*", "cron must not run year round by default")
-        self.assertEqual(month_field, "9-12,1")
+        # August is included deliberately: leagues draft in late August, and
+        # excluding it means draft-day transactions queue until September.
+        self.assertEqual(month_field, "8-12,1")
+        self.assertIn("8", month_field.split("-")[0])
 
     def test_supports_manual_dispatch(self):
         self.assertIn("workflow_dispatch:", self.code_text())

@@ -2,7 +2,7 @@ name: Fantasy notifier
 
 on:
   schedule:
-    # Every 5 minutes, September through January only.
+    # Every 5 minutes, August through January only.
     #
     # Five minutes is GitHub's documented minimum interval. On a public repo
     # Actions minutes are unlimited, so the cost of this cadence is not
@@ -10,9 +10,10 @@ on:
     # unofficial API. If ESPN ever starts refusing requests, widening this
     # back to */10 or */20 is the first thing to try.
     #
-    # The month field (9-12,1) keeps the job from waking up in the offseason.
-    # Note that a league drafting in August gets no coverage until Sept 1;
-    # add 8 to the month list if you want draft-day transactions posted live.
+    # The month field (8-12,1) keeps the job from waking up in the offseason.
+    # August is included so that draft-day trades and waiver claims post live
+    # -- most leagues draft in late August, and without it those sit unposted
+    # until September and then arrive as one burst.
     #
     # DYNASTY LEAGUES: rookie drafts and offseason trades happen year round.
     # To widen this, change the month field to `*`:
@@ -24,7 +25,7 @@ on:
     # GitHub's scheduler is best-effort, runs late under load, and drops
     # short-interval runs first -- expect fewer than 12 an hour in practice.
     # Nothing depends on the cadence: dedup is content-hashed, not timed.
-    - cron: "*/5 * * 9-12,1 *"
+    - cron: "*/5 * * 8-12,1 *"
 
   # Manual trigger, for the first-run smoke test and for debugging.
   workflow_dispatch:
