@@ -74,7 +74,16 @@ class TestRenderBasics(unittest.TestCase):
         self.assertLess(line.index("Winner"), line.index("Loser"))
 
     def test_winner_is_marked(self):
-        self.assertIn("✅", render_week(1, [matchup()]))
+        # "def." carries what the check mark used to.
+        self.assertIn("def.", render_week(1, [matchup()]))
+
+    def test_no_emoji_are_emitted(self):
+        message = render_week(
+            15, [matchup(playoff=True), matchup("C", 1.0, "D", 1.0), bye("E", 88.0)]
+        )
+        for char in message:
+            with self.subTest(char=char):
+                self.assertLess(ord(char), 0x2100, f"emoji in output: {char!r}")
 
     def test_both_scores_appear(self):
         message = render_week(1, [matchup("Team A", 128.4, "Team B", 96.2)])
@@ -105,7 +114,7 @@ class TestTies(unittest.TestCase):
 
     def test_tie_does_not_claim_a_winner(self):
         message = render_week(1, [matchup("Team C", 101.0, "Team D", 101.0)])
-        self.assertNotIn("✅", message)
+        self.assertNotIn("def.", message)
 
     def test_both_tied_teams_appear(self):
         message = render_week(1, [matchup("Team C", 101.0, "Team D", 101.0)])

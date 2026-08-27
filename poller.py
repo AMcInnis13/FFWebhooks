@@ -724,7 +724,7 @@ def render_activity(activity) -> list[tuple[str, str]]:
 
 
 def _render_trade(received, sent, trade_order, sent_order) -> str:
-    lines = ["\U0001f501 Trade processed"]
+    lines = ["**Trade processed**"]
 
     for team in trade_order:
         lines.append(f"  {team} gets: {', '.join(received[team])}")
@@ -745,8 +745,11 @@ def _render_roster_moves(team: str, adds, drops) -> str:
     if not adds and not drops:
         return ""
 
-    header = "\U0001f4e5" if adds else "\U0001f4e4"
-    lines = [f"{header} {team}"]
+    # The emoji used to distinguish an add block from a drop-only one, so the
+    # label carries that now. The team name is left unformatted: it comes from
+    # ESPN and could contain markdown characters.
+    label = "Roster move" if adds else "Drop"
+    lines = [f"**{label}** — {team}"]
 
     for player, bid, is_waiver in adds:
         if is_waiver and bid > 0:
@@ -909,10 +912,10 @@ def render_week(week: int, matchups) -> str:
 
         if _is_missing_side(away):
             # A bye is not a result, so it stays out of the high/low race.
-            lines.append((f"\U0001f4a4 {home_label} {_format_score(home_score)} (bye)", is_playoff))
+            lines.append((f"{home_label} {_format_score(home_score)} (bye)", is_playoff))
             continue
         if _is_missing_side(home):
-            lines.append((f"\U0001f4a4 {away_label} {_format_score(away_score)} (bye)", is_playoff))
+            lines.append((f"{away_label} {_format_score(away_score)} (bye)", is_playoff))
             continue
 
         scores.append((home_label, home_score))
@@ -920,17 +923,18 @@ def render_week(week: int, matchups) -> str:
 
         if home_score == away_score:
             line = (
-                f"\U0001f91d {home_label} {_format_score(home_score)} — "
+                f"{home_label} {_format_score(home_score)} — "
                 f"{away_label} {_format_score(away_score)} (tie)"
             )
         elif home_score > away_score:
+            # "def." carries the meaning the check mark used to.
             line = (
-                f"✅ {home_label} {_format_score(home_score)} — "
+                f"{home_label} {_format_score(home_score)} def. "
                 f"{away_label} {_format_score(away_score)}"
             )
         else:
             line = (
-                f"✅ {away_label} {_format_score(away_score)} — "
+                f"{away_label} {_format_score(away_score)} def. "
                 f"{home_label} {_format_score(home_score)}"
             )
         lines.append((line, is_playoff))
@@ -939,9 +943,9 @@ def render_week(week: int, matchups) -> str:
     any_playoff = any(playoff_flags)
 
     if all_playoff:
-        header = f"\U0001f3c6 Week {week} Playoff Results"
+        header = f"**Week {week} Playoff Results**"
     else:
-        header = f"\U0001f3c8 Week {week} Results"
+        header = f"**Week {week} Results**"
 
     body = []
     for line, is_playoff in lines:
@@ -960,8 +964,8 @@ def render_week(week: int, matchups) -> str:
         high_teams = ", ".join(name for name, score in scores if score == best)
         low_teams = ", ".join(name for name, score in scores if score == worst)
         rendered.append("")
-        rendered.append(f"  \U0001f4c8 High: {high_teams} — {_format_score(best)}")
-        rendered.append(f"  \U0001f4c9 Low: {low_teams} — {_format_score(worst)}")
+        rendered.append(f"  High: {high_teams} — {_format_score(best)}")
+        rendered.append(f"  Low: {low_teams} — {_format_score(worst)}")
 
     return "\n".join(rendered)
 
@@ -1090,7 +1094,7 @@ def due_reminder(when: datetime):
 def render_reminder(slot: str, minutes_remaining: int) -> str:
     _, _, description = REMINDER_SLOTS[slot]
     unit = "minute" if minutes_remaining == 1 else "minutes"
-    return f"⏰ Lineups lock in {minutes_remaining} {unit} for {description}."
+    return f"**Lineups lock in {minutes_remaining} {unit}** for {description}."
 
 
 def process_reminders(
@@ -1175,7 +1179,7 @@ def render_bootstrap_message(activity_count: int, week_count: int) -> str:
     weeks = "week" if week_count == 1 else "weeks"
     entries = "transaction" if activity_count == 1 else "transactions"
     return (
-        "✅ Fantasy notifier is online.\n"
+        "**Fantasy notifier is online.**\n"
         "Watching transactions, weekly results, and lineup lock reminders.\n"
         f"Starting from now: {activity_count} existing {entries} and "
         f"{week_count} completed {weeks} marked as already seen, "
@@ -1201,32 +1205,32 @@ AUTH_ERROR_NAMES = frozenset(
 
 ERROR_MESSAGES = {
     "auth": (
-        "⚠️ ESPN rejected the notifier's credentials.\n"
+        "**ESPN rejected the notifier's credentials.**\n"
         "The ESPN_S2 and SWID cookies have likely expired. Re-pull them from a "
         "browser and update the repository secrets — updates are paused until then."
     ),
     "league": (
-        "⚠️ The notifier could not reach ESPN.\n"
+        "**The notifier could not reach ESPN.**\n"
         "It will retry on the next scheduled run."
     ),
     "timezone": (
-        "⚠️ The notifier could not resolve its configured timezone, so lineup "
+        "**The notifier could not resolve its configured timezone**, so lineup "
         "reminders are paused.\nCheck that TIMEZONE names a real zone."
     ),
     "transactions": (
-        "⚠️ The notifier hit an error while posting transactions.\n"
+        "**The notifier hit an error while posting transactions.**\n"
         "Results and reminders are unaffected; it will retry on the next run."
     ),
     "results": (
-        "⚠️ The notifier hit an error while posting weekly results.\n"
+        "**The notifier hit an error while posting weekly results.**\n"
         "Transactions and reminders are unaffected; it will retry on the next run."
     ),
     "reminders": (
-        "⚠️ The notifier hit an error while checking lineup reminders.\n"
+        "**The notifier hit an error while checking lineup reminders.**\n"
         "Transactions and results are unaffected; it will retry on the next run."
     ),
     "bootstrap": (
-        "⚠️ The notifier could not complete its first-run setup.\n"
+        "**The notifier could not complete its first-run setup.**\n"
         "It will try again on the next scheduled run."
     ),
 }
@@ -1473,10 +1477,10 @@ def run_dry_run(now: datetime | None = None) -> int:
 
 
 DEMO_HEADER = (
-    "🧪 Notifier test starting. The next few messages are sample data, "
+    "**Notifier test starting.** The next few messages are sample data, "
     "not real league activity."
 )
-DEMO_FOOTER = "🧪 Test complete. The sample messages above can be deleted."
+DEMO_FOOTER = "**Test complete.** The sample messages above can be deleted."
 
 
 def _post_demo_messages(router: "DiscordRouter") -> int:

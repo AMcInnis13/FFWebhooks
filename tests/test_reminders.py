@@ -265,14 +265,20 @@ class TestMessage(unittest.TestCase):
     def test_matches_the_documented_wording(self):
         self.assertEqual(
             render_reminder("sunday", 30),
-            "⏰ Lineups lock in 30 minutes for the Sunday early games.",
+            "**Lineups lock in 30 minutes** for the Sunday early games.",
         )
 
     def test_thursday_wording(self):
         self.assertIn("Thursday night game", render_reminder("thursday", 30))
 
     def test_singular_minute(self):
-        self.assertIn("1 minute for", render_reminder("sunday", 1))
+        self.assertIn("1 minute** for", render_reminder("sunday", 1))
+
+    def test_no_emoji_are_emitted(self):
+        for slot in ("thursday", "sunday"):
+            with self.subTest(slot=slot):
+                for char in render_reminder(slot, 30):
+                    self.assertLess(ord(char), 0x2100, f"emoji in output: {char!r}")
 
     def test_message_is_short(self):
         self.assertLess(len(render_reminder("sunday", 30)), 100)

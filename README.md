@@ -11,13 +11,13 @@ workflow commits back to the repository.
 Transactions, grouped so a trade reads as one message rather than six:
 
 ```
-🔁 Trade processed
+**Trade processed**
   Sofa Sharks gets: Amari Cooper, Rhamondre Stevenson
   Waiver Wolves gets: Jaylen Waddle
 ```
 
 ```
-📥 Waiver Wolves
+**Roster move** — Waiver Wolves
   + Marvin Waivers Jr. ($42 waiver)
   − Cordarrelle Patterson
 ```
@@ -25,19 +25,19 @@ Transactions, grouped so a trade reads as one message rather than six:
 Weekly results once a week is complete, with the week's high and low:
 
 ```
-🏈 Week 3 Results
-  ✅ Waiver Wolves 134.8 — Sofa Sharks 118.6
-  🤝 Team C 101.0 — Team D 101.0 (tie)
-  💤 Backup Badgers 88.0 (bye)
+**Week 3 Results**
+  Waiver Wolves 134.8 def. Sofa Sharks 118.6
+  Team C 101.0 — Team D 101.0 (tie)
+  Backup Badgers 88.0 (bye)
 
-  📈 High: Waiver Wolves — 134.8
-  📉 Low: Sofa Sharks — 118.6
+  High: Waiver Wolves — 134.8
+  Low: Sofa Sharks — 118.6
 ```
 
 Lineup lock reminders, 30 minutes before Thursday and Sunday kickoff:
 
 ```
-⏰ Lineups lock in 30 minutes for the Sunday early games.
+**Lineups lock in 30 minutes** for the Sunday early games.
 ```
 
 ## Make this repository public
@@ -163,7 +163,7 @@ expect. Go to **Actions → Fantasy notifier → Run workflow**, set **mode** to
 
 That posts one of each message type — a trade, a waiver claim with a drop, a free agent add, weekly
 results, and both lineup reminders — to whichever channels you configured. The batch is bookended with
-`🧪 Notifier test starting` and `🧪 Test complete` so nobody in the server mistakes a sample trade for a
+`Notifier test starting` and `Test complete` so nobody in the server mistakes a sample trade for a
 real one. Delete the samples afterwards.
 
 Demo mode writes no state and never contacts ESPN, so it cannot consume your first run or skip anything.
@@ -175,7 +175,7 @@ Go to **Actions → Fantasy notifier → Run workflow**, leaving **mode** on **n
 
 On the very first run you should see:
 
-- Exactly **one** message in Discord: `✅ Fantasy notifier is online.`
+- Exactly **one** message in Discord: `**Fantasy notifier is online.**`
 - A new commit to `state.json` from `github-actions[bot]`
 
 The first run deliberately posts nothing else. It records your league's current position as

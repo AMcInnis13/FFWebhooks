@@ -379,7 +379,7 @@ class TestMessageShape(unittest.TestCase):
         )
         self.assertEqual(
             render_activity(activity),
-            "\U0001f4e5 Waiver Wolves\n"
+            "**Roster move** — Waiver Wolves\n"
             "  + Marvin Waivers Jr. ($42 waiver)\n"
             "  − Cordarrelle Patterson",
         )
@@ -398,14 +398,38 @@ class TestMessageShape(unittest.TestCase):
         )
         self.assertEqual(
             render_activity(activity),
-            "\U0001f501 Trade processed\n"
+            "**Trade processed**\n"
             "  Team B gets: Player X, Player Y\n"
             "  Team A gets: Player Z",
         )
 
-    def test_drop_only_block_uses_the_outbox_marker(self):
+    def test_drop_only_block_is_labelled_a_drop(self):
+        # The label carries what the outbox emoji used to.
         activity = FakeActivity([(team("Team A"), "DROPPED", player("Player X"), 0)])
-        self.assertTrue(render_activity(activity).startswith("\U0001f4e4"))
+        self.assertTrue(render_activity(activity).startswith("**Drop**"))
+
+    def test_an_add_block_is_labelled_a_roster_move(self):
+        activity = FakeActivity([(team("Team A"), "FA ADDED", player("Player X"), 0)])
+        self.assertTrue(render_activity(activity).startswith("**Roster move**"))
+
+    def test_no_emoji_are_emitted(self):
+        activity = FakeActivity(
+            [
+                (team("Team A"), "TRADE_SENT", player("X"), 0),
+                (team("Team B"), "TRADE_RECEIVED", player("X"), 0),
+                (team("Team C"), "WAIVER ADDED", player("Y"), 12),
+                (team("Team C"), "DROPPED", player("Z"), 0),
+            ]
+        )
+        # The minus sign pairs with "+" on add/drop lines and the em dash
+        # separates label from team. Both are typography, not emoji.
+        typographic = {"−", "—", "–"}
+        for _, message in render_categorised(activity):
+            for char in message:
+                if char in typographic:
+                    continue
+                with self.subTest(char=char):
+                    self.assertLess(ord(char), 0x2100, f"emoji in output: {char!r}")
 
     def test_no_mention_syntax_is_introduced(self):
         # allowed_mentions is the real guard, but the renderer should not be

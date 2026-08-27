@@ -151,19 +151,21 @@ class TestEncoding(unittest.TestCase):
             code = run_dry_run()
         self.assertEqual(code, EXIT_OK)
 
-    def test_emoji_actually_reach_the_stream(self):
+    def test_non_cp1252_characters_reach_the_stream(self):
+        # Messages no longer contain emoji, but the minus sign on drop lines
+        # (U+2212) is still outside cp1252, so the reconfigure still matters.
         raw = io.BytesIO()
         stream = io.TextIOWrapper(raw, encoding="cp1252", errors="strict")
         with redirect_stdout(stream):
             run_dry_run()
         stream.flush()
-        self.assertIn("🔁".encode("utf-8"), raw.getvalue())
+        self.assertIn("−".encode("utf-8"), raw.getvalue())
 
     def test_a_stream_without_reconfigure_does_not_crash(self):
         # io.StringIO has no reconfigure(); the helper must tolerate that.
         code, output = capture(run_dry_run)
         self.assertEqual(code, EXIT_OK)
-        self.assertIn("🔁", output)
+        self.assertIn("−", output)
 
 
 class TestRouting(unittest.TestCase):
