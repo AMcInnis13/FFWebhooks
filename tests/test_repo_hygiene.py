@@ -8,6 +8,7 @@ Written as tests rather than a one-off command so the guarantee is
 repeatable and the reviewed false positives stay documented.
 """
 
+import json
 import os
 import re
 import subprocess
@@ -168,11 +169,51 @@ class TestShippedState(unittest.TestCase):
     def test_state_json_is_tracked(self):
         self.assertIn("state.json", tracked_files())
 
-    def test_state_json_ships_empty(self):
-        # A populated state.json in the repo would suppress the new user's
-        # bootstrap run.
+    def state(self):
         with open(os.path.join(REPO_ROOT, "state.json"), encoding="utf-8") as handle:
-            self.assertEqual(handle.read().strip(), "{}")
+            return json.load(handle)
+
+    def test_state_json_holds_only_known_keys(self):
+        # Originally this asserted the file was literally "{}". That is true
+        # of a repo that has never run and false the moment the workflow
+        # commits real state back, so it failed for a healthy deployment.
+        # What actually matters is that the contents stay safe to publish.
+        allowed = {
+            "last_activity_ms",
+            "seen_fingerprints",
+            "posted_weeks",
+            "posted_reminders",
+            "error_notices",
+        }
+        unexpected = set(self.state()) - allowed
+        self.assertEqual(unexpected, set(), f"unexpected keys in state.json: {unexpected}")
+
+    def test_state_json_discloses_nothing_readable(self):
+        data = self.state()
+        self.assertIsInstance(data.get("last_activity_ms", 0), int)
+
+        for mark in data.get("seen_fingerprints", []):
+            with self.subTest(fingerprint=mark):
+                self.assertRegex(mark, r"^[0-9a-f]+$", "fingerprints must be opaque hex")
+
+        for week in data.get("posted_weeks", []):
+            with self.subTest(week=week):
+                self.assertIsInstance(week, int)
+
+        for key in data.get("posted_reminders", []):
+            with self.subTest(reminder=key):
+                self.assertRegex(key, r"^\d{4}-\d{2}-\d{2}-(thursday|sunday)$")
+
+        for kind, when in (data.get("error_notices") or {}).items():
+            with self.subTest(kind=kind):
+                self.assertIsInstance(when, int)
+
+    def test_a_fresh_fork_should_ship_empty(self):
+        # Not enforced, because a live repo legitimately carries real state.
+        # Recorded so anyone publishing this as a template knows to reset it:
+        # a populated state.json suppresses the new user's bootstrap run and
+        # a zeroed watermark would replay recent_activity in one burst.
+        self.assertTrue(os.path.exists(os.path.join(REPO_ROOT, "state.json")))
 
 
 class TestDependencyDiscipline(unittest.TestCase):
