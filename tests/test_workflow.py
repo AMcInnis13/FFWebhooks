@@ -79,6 +79,25 @@ class TestTriggers(WorkflowTestCase):
     def test_supports_manual_dispatch(self):
         self.assertIn("workflow_dispatch:", self.code_text())
 
+    def test_manual_run_offers_a_mode_choice(self):
+        text = self.code_text()
+        self.assertIn("inputs:", text)
+        self.assertIn("mode:", text)
+        self.assertIn("type: choice", text)
+        self.assertIn("- normal", text)
+        self.assertIn("- demo", text)
+
+    def test_mode_defaults_to_normal(self):
+        self.assertRegex(self.code_text(), r"default:\s*normal")
+
+    def test_demo_is_only_reachable_by_choosing_it(self):
+        # A scheduled run carries no inputs, so mode is empty and the else
+        # branch runs. Cron must never be able to post sample trades.
+        text = self.code_text()
+        self.assertIn('if [ "${{ inputs.mode }}" = "demo" ]', text)
+        self.assertIn("python poller.py --demo", text)
+        self.assertIn("else", text)
+
     def test_explains_how_to_widen_for_dynasty_leagues(self):
         # This one is meant to be satisfied by a comment.
         self.assertIn("DYNASTY", self.text.upper())

@@ -1472,6 +1472,64 @@ def run_dry_run(now: datetime | None = None) -> int:
     return EXIT_OK
 
 
+DEMO_HEADER = (
+    "🧪 Notifier test starting. The next few messages are sample data, "
+    "not real league activity."
+)
+DEMO_FOOTER = "🧪 Test complete. The sample messages above can be deleted."
+
+
+def _post_demo_messages(router: "DiscordRouter") -> int:
+    """Send one of each message type to the configured channels."""
+    league = _FixtureLeague()
+    sent = 0
+
+    router.post(CATEGORY_MAIN, DEMO_HEADER)
+    sent += 1
+
+    for activity in sorted(league.activities, key=lambda item: item.date):
+        for category, message in render_activity(activity):
+            router.post(category, message)
+            sent += 1
+
+    results = render_week(3, league.scoreboard(3))
+    if results:
+        router.post(CATEGORY_RESULTS, results)
+        sent += 1
+
+    # Rendered directly rather than through process_reminders: a demo should
+    # show both reminders regardless of what day it is, and should not need a
+    # tz database to run.
+    for slot in ("thursday", "sunday"):
+        router.post(CATEGORY_MAIN, render_reminder(slot, REMINDER_LEAD_MINUTES))
+        sent += 1
+
+    router.post(CATEGORY_MAIN, DEMO_FOOTER)
+    sent += 1
+    return sent
+
+
+def run_demo(router: "DiscordRouter") -> int:
+    """Post sample messages to the real channels. No state, no ESPN call.
+
+    This is the one thing --dry-run cannot tell you: whether the webhook URLs
+    are right, whether routing lands in the intended channels, and how the
+    formatting actually looks in Discord rather than a terminal.
+
+    Deliberately touches neither state.json nor ESPN, so running it cannot
+    consume the first-run bootstrap or move the watermark.
+    """
+    try:
+        sent = _post_demo_messages(router)
+    except DiscordError as exc:
+        # DiscordError never carries the webhook URL, so this is safe to print.
+        warn(f"demo failed: {exc}")
+        return EXIT_FAILURE
+
+    print(f"demo complete: {sent} messages sent across {router.channel_count} channel(s)")
+    return EXIT_OK
+
+
 def _parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Post ESPN fantasy football updates to a Discord webhook."
@@ -1480,6 +1538,14 @@ def _parse_args(argv=None):
         "--dry-run",
         action="store_true",
         help="Run the full pipeline against fixture data: no network, no state write.",
+    )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help=(
+            "Post sample messages to the configured Discord channels to verify "
+            "routing and formatting. Writes no state and reads nothing from ESPN."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -1503,8 +1569,9 @@ def main(
 
     # A real `--dry-run` from the CLI uses fixture everything, so it works
     # from a bare checkout with no secrets set. Tests inject a league and go
-    # through the normal path instead.
-    if args.dry_run and league is None and env is None:
+    # through the normal path instead. `--demo` needs real config, so it is
+    # excluded here even when combined with --dry-run.
+    if args.dry_run and not args.demo and league is None and env is None:
         return run_dry_run(now=now)
 
     try:
@@ -1514,10 +1581,15 @@ def main(
         warn(str(exc))
         return EXIT_FAILURE
 
-    state = load_state(state_path)
-
     if router is None:
         router = DiscordRouter(config, dry_run=args.dry_run)
+
+    # Before any state or ESPN work: a demo must not be able to consume the
+    # first-run bootstrap or move the watermark.
+    if args.demo:
+        return run_demo(router)
+
+    state = load_state(state_path)
 
     # Reminders, bootstrap, and every error notice go to the main channel.
     discord = router.main

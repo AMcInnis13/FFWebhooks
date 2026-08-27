@@ -156,9 +156,22 @@ are easier to read and edit.
 
 Both can be left unset.
 
-### 6. Test it with workflow_dispatch
+### 6. Send a test message (optional, recommended)
 
-Go to **Actions → Fantasy notifier → Run workflow**.
+Before the first real run, check that your webhooks are right and that messages land in the channels you
+expect. Go to **Actions → Fantasy notifier → Run workflow**, set **mode** to **demo**, and run it.
+
+That posts one of each message type — a trade, a waiver claim with a drop, a free agent add, weekly
+results, and both lineup reminders — to whichever channels you configured. The batch is bookended with
+`🧪 Notifier test starting` and `🧪 Test complete` so nobody in the server mistakes a sample trade for a
+real one. Delete the samples afterwards.
+
+Demo mode writes no state and never contacts ESPN, so it cannot consume your first run or skip anything.
+Scheduled runs receive no inputs and always take the normal path — cron can never post sample data.
+
+### 7. Do the first real run
+
+Go to **Actions → Fantasy notifier → Run workflow**, leaving **mode** on **normal**.
 
 On the very first run you should see:
 

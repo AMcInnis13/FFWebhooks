@@ -23,6 +23,14 @@ on:
 
   # Manual trigger, for the first-run smoke test and for debugging.
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "normal posts real league updates; demo sends sample messages to check routing"
+        type: choice
+        default: normal
+        options:
+          - normal
+          - demo
 
 # The job commits state.json back to the repository.
 permissions:
@@ -79,7 +87,16 @@ jobs:
           # unset (America/Chicago, reminders on).
           TIMEZONE: ${{ vars.TIMEZONE }}
           LINEUP_REMINDERS: ${{ vars.LINEUP_REMINDERS }}
-        run: python poller.py
+        # A scheduled run carries no inputs, so `mode` is empty and the else
+        # branch runs. Demo mode is reachable only by choosing it in the
+        # manual-run form -- cron can never post sample trades.
+        run: |
+          if [ "${{ inputs.mode }}" = "demo" ]; then
+            echo "Running in DEMO mode: posting sample messages, no state written."
+            python poller.py --demo
+          else
+            python poller.py
+          fi
 
       - name: Commit state
         # always(): the notifier exits non-zero on a partial failure, but it
