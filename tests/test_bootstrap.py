@@ -73,12 +73,32 @@ class BusyLeague:
 
 
 class RecordingDiscord:
+    """Accepts both shapes.
+
+    bootstrap() posts a single message to the main channel, while
+    process_transactions() routes by category. One recorder serving both
+    keeps these tests focused on what got posted rather than where.
+    """
+
     def __init__(self):
         self.messages = []
+        self.categories = []
 
-    def post(self, content):
+    def post(self, *args):
+        if len(args) == 2:
+            category, content = args
+        else:
+            category, content = "main", args[0]
         self.messages.append(content)
+        self.categories.append(category)
         return 1
+
+    def for_category(self, category):
+        return self
+
+    @property
+    def main(self):
+        return self
 
 
 class TestExactlyOneMessage(unittest.TestCase):

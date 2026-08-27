@@ -57,14 +57,21 @@ class FakeLeague:
 
 
 class RecordingDiscord:
-    def __init__(self, fail_on=None):
-        self.messages = []
-        self.fail_on = fail_on
+    """Stands in for DiscordRouter: post() takes a category."""
 
-    def post(self, content):
+    def __init__(self, fail_on=None, fail_category=None):
+        self.messages = []
+        self.categories = []
+        self.fail_on = fail_on
+        self.fail_category = fail_category
+
+    def post(self, category, content):
+        if self.fail_category is not None and category == self.fail_category:
+            raise DiscordError("Discord returned HTTP 500")
         if self.fail_on is not None and len(self.messages) + 1 == self.fail_on:
             raise DiscordError("Discord returned HTTP 500")
         self.messages.append(content)
+        self.categories.append(category)
         return 1
 
 
@@ -202,9 +209,11 @@ class TestMillisecondCollision(unittest.TestCase):
 
 class TestFingerprintBookkeeping(unittest.TestCase):
     def test_fingerprints_are_recorded(self):
+        # An FA add is a roster move, so the marker is scoped to that
+        # category rather than the activity as a whole.
         activity = add_activity(BASE_MS)
         _, state, _ = run([activity])
-        self.assertIn(fingerprint(activity), state["seen_fingerprints"])
+        self.assertIn(fingerprint(activity, "roster"), state["seen_fingerprints"])
 
     def test_unrenderable_activity_is_marked_seen_without_posting(self):
         # Otherwise it is reconsidered on every run, forever.
@@ -244,14 +253,14 @@ class TestPartialFailure(unittest.TestCase):
         with self.assertRaises(DiscordError):
             process_transactions(FakeLeague(activities), state, RecordingDiscord(fail_on=2))
         self.assertEqual(state["last_activity_ms"], BASE_MS)
-        self.assertIn(fingerprint(activities[0]), state["seen_fingerprints"])
+        self.assertIn(fingerprint(activities[0], "roster"), state["seen_fingerprints"])
 
     def test_the_failed_activity_is_not_marked_seen(self):
         activities = [add_activity(BASE_MS + i, player=f"P{i}") for i in range(3)]
         state = default_state()
         with self.assertRaises(DiscordError):
             process_transactions(FakeLeague(activities), state, RecordingDiscord(fail_on=2))
-        self.assertNotIn(fingerprint(activities[1]), state["seen_fingerprints"])
+        self.assertNotIn(fingerprint(activities[1], "roster"), state["seen_fingerprints"])
 
     def test_next_run_retries_only_what_did_not_post(self):
         activities = [add_activity(BASE_MS + i, player=f"P{i}") for i in range(3)]
@@ -264,6 +273,98 @@ class TestPartialFailure(unittest.TestCase):
         self.assertIn("P1", discord.messages[0])
         self.assertIn("P2", discord.messages[1])
         self.assertFalse(any("P0" in m for m in discord.messages))
+
+
+class TestPerCategoryDedup(unittest.TestCase):
+    """One activity, two channels, and a failure in between.
+
+    Recording dedup per activity rather than per category would mean a
+    failure on the second post leaves nothing recorded -- so the next run
+    reposts the message that already succeeded.
+    """
+
+    def mixed_activity(self, date=BASE_MS):
+        """A trade and a roster move in one activity: two categories."""
+        return FakeActivity(
+            date,
+            [
+                (FakeTeam("Team A"), "TRADE_SENT", FakePlayer("Traded Guy"), 0),
+                (FakeTeam("Team B"), "TRADE_RECEIVED", FakePlayer("Traded Guy"), 0),
+                (FakeTeam("Team C"), "FA ADDED", FakePlayer("Added Guy"), 0),
+            ],
+        )
+
+    def test_one_activity_posts_to_both_channels(self):
+        posted, _, discord = run([self.mixed_activity()])
+        self.assertEqual(posted, 2)
+        self.assertEqual(sorted(discord.categories), ["roster", "trades"])
+
+    def test_second_run_posts_neither_again(self):
+        _, state, _ = run([self.mixed_activity()])
+        posted, _, discord = run([self.mixed_activity()], state=state)
+        self.assertEqual(posted, 0)
+        self.assertEqual(discord.messages, [])
+
+    def test_a_failed_second_category_does_not_repost_the_first(self):
+        activity = self.mixed_activity()
+        state = default_state()
+
+        # The trade posts; the roster message fails.
+        discord = RecordingDiscord(fail_category="roster")
+        with self.assertRaises(DiscordError):
+            process_transactions(FakeLeague([activity]), state, discord)
+        self.assertEqual(discord.categories, ["trades"])
+
+        # Next run: only the roster message is retried.
+        posted, state, retry = run([activity], state=state)
+        self.assertEqual(posted, 1, "expected only the failed category to retry")
+        self.assertEqual(retry.categories, ["roster"])
+        self.assertIn("Added Guy", retry.messages[0])
+        self.assertFalse(any("Traded Guy" in m for m in retry.messages))
+
+    def test_the_watermark_stays_back_until_every_category_posts(self):
+        activity = self.mixed_activity()
+        state = default_state()
+        with self.assertRaises(DiscordError):
+            process_transactions(
+                FakeLeague([activity]), state, RecordingDiscord(fail_category="roster")
+            )
+        # Advancing past the activity would strand the unsent category.
+        self.assertEqual(state["last_activity_ms"], 0)
+
+    def test_a_third_run_after_recovery_is_silent(self):
+        activity = self.mixed_activity()
+        state = default_state()
+        with self.assertRaises(DiscordError):
+            process_transactions(
+                FakeLeague([activity]), state, RecordingDiscord(fail_category="roster")
+            )
+        run([activity], state=state)
+        posted, _, discord = run([activity], state=state)
+        self.assertEqual(posted, 0)
+        self.assertEqual(discord.messages, [])
+
+    def test_category_markers_are_distinct_and_opaque(self):
+        activity = self.mixed_activity()
+        trades = fingerprint(activity, "trades")
+        roster = fingerprint(activity, "roster")
+        whole = fingerprint(activity)
+        self.assertEqual(len({trades, roster, whole}), 3)
+        for mark in (trades, roster, whole):
+            with self.subTest(mark=mark):
+                # state.json is public: the marker must not disclose the type.
+                self.assertNotIn("trade", mark)
+                self.assertNotIn("roster", mark)
+                self.assertTrue(all(c in "0123456789abcdef" for c in mark))
+
+    def test_an_activity_wide_marker_suppresses_every_category(self):
+        # This is what bootstrap seeds.
+        activity = self.mixed_activity()
+        state = default_state()
+        state["seen_fingerprints"] = [fingerprint(activity)]
+        posted, _, discord = run([activity], state=state)
+        self.assertEqual(posted, 0)
+        self.assertEqual(discord.messages, [])
 
 
 class TestMalformedInput(unittest.TestCase):

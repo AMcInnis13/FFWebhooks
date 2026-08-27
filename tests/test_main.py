@@ -107,6 +107,28 @@ class RecordingDiscord:
         return 1
 
 
+class RecordingRouter:
+    """Funnels every category into one recorder.
+
+    These tests are about orchestration, not routing, so collapsing the
+    channels keeps the assertions about which messages were sent rather than
+    where. Routing itself is covered by tests/test_discord.py.
+    """
+
+    def __init__(self, discord):
+        self._discord = discord
+
+    def post(self, category, content):
+        return self._discord.post(content)
+
+    def for_category(self, category):
+        return self._discord
+
+    @property
+    def main(self):
+        return self._discord
+
+
 class MainTestCase(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
@@ -136,6 +158,7 @@ class MainTestCase(unittest.TestCase):
                 env=FAKE_ENV if env is UNSET else env,
                 league=FakeLeague() if league is UNSET else league,
                 state_path=self.path,
+                router=RecordingRouter(self.discord),
                 discord=self.discord,
                 now_ms=NOW_MS,
                 **kwargs,

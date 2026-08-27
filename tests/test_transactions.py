@@ -8,7 +8,22 @@ players that come back as a bare int id.
 
 import unittest
 
-from poller import UNKNOWN_TEAM_LABEL, render_activity
+from poller import (
+    CATEGORY_ROSTER,
+    CATEGORY_TRADES,
+    UNKNOWN_TEAM_LABEL,
+)
+from poller import render_activity as render_categorised
+
+
+def render_activity(activity):
+    """All categories joined into one string.
+
+    Most assertions here are about wording and grouping, not routing, and
+    reading identically whichever channel a block lands in is the point.
+    Routing itself is covered by TestCategoryRouting below.
+    """
+    return "\n".join(message for _, message in render_categorised(activity))
 
 
 class FakeTeam:
@@ -224,6 +239,99 @@ class TestLibraryQuirks(unittest.TestCase):
     def test_team_object_with_blank_name_gets_a_label(self):
         activity = FakeActivity([(FakeTeam(""), "DROPPED", player("Player X"), 0)])
         self.assertIn(UNKNOWN_TEAM_LABEL, render_activity(activity))
+
+
+class TestCategoryRouting(unittest.TestCase):
+    """Which channel each block is destined for."""
+
+    def categories(self, activity):
+        return [category for category, _ in render_categorised(activity)]
+
+    def message_for(self, activity, category):
+        for name, message in render_categorised(activity):
+            if name == category:
+                return message
+        return None
+
+    def test_a_trade_is_categorised_as_a_trade(self):
+        activity = FakeActivity(
+            [
+                (team("Team A"), "TRADE_SENT", player("Player X"), 0),
+                (team("Team B"), "TRADE_RECEIVED", player("Player X"), 0),
+            ]
+        )
+        self.assertEqual(self.categories(activity), [CATEGORY_TRADES])
+
+    def test_a_waiver_claim_is_categorised_as_a_roster_move(self):
+        activity = FakeActivity(
+            [(team("Waiver Wolves"), "WAIVER ADDED", player("Marvin Waivers Jr."), 42)]
+        )
+        self.assertEqual(self.categories(activity), [CATEGORY_ROSTER])
+
+    def test_free_agent_adds_and_drops_are_roster_moves(self):
+        for verb in ("FA ADDED", "DROPPED"):
+            with self.subTest(verb=verb):
+                activity = FakeActivity([(team("Team A"), verb, player("Player X"), 0)])
+                self.assertEqual(self.categories(activity), [CATEGORY_ROSTER])
+
+    def test_an_activity_with_both_splits_into_two_messages(self):
+        # They belong in different channels; merging them defeats routing.
+        activity = FakeActivity(
+            [
+                (team("Team A"), "TRADE_SENT", player("Traded Guy"), 0),
+                (team("Team B"), "TRADE_RECEIVED", player("Traded Guy"), 0),
+                (team("Team C"), "FA ADDED", player("Added Guy"), 0),
+            ]
+        )
+        self.assertEqual(sorted(self.categories(activity)), sorted([CATEGORY_TRADES, CATEGORY_ROSTER]))
+
+        trade = self.message_for(activity, CATEGORY_TRADES)
+        roster = self.message_for(activity, CATEGORY_ROSTER)
+        self.assertIn("Traded Guy", trade)
+        self.assertNotIn("Added Guy", trade)
+        self.assertIn("Added Guy", roster)
+        self.assertNotIn("Traded Guy", roster)
+
+    def test_all_teams_roster_moves_share_one_message(self):
+        # They route to the same channel, so one message keeps the channel
+        # readable rather than firing one post per team.
+        activity = FakeActivity(
+            [
+                (team("Team A"), "FA ADDED", player("Player X"), 0),
+                (team("Team B"), "FA ADDED", player("Player Y"), 0),
+            ]
+        )
+        self.assertEqual(self.categories(activity), [CATEGORY_ROSTER])
+        message = self.message_for(activity, CATEGORY_ROSTER)
+        self.assertIn("Player X", message)
+        self.assertIn("Player Y", message)
+
+    def test_nothing_renderable_yields_no_pairs(self):
+        activity = FakeActivity([(team("Team A"), "UNKNOWN", player("Ghost"), 0)])
+        self.assertEqual(render_categorised(activity), [])
+
+    def test_trades_are_listed_before_roster_moves(self):
+        # Deterministic order matters: a partial failure resumes from it.
+        activity = FakeActivity(
+            [
+                (team("Team A"), "FA ADDED", player("Added Guy"), 0),
+                (team("Team B"), "TRADE_SENT", player("Traded Guy"), 0),
+                (team("Team C"), "TRADE_RECEIVED", player("Traded Guy"), 0),
+            ]
+        )
+        self.assertEqual(self.categories(activity), [CATEGORY_TRADES, CATEGORY_ROSTER])
+
+    def test_every_message_is_non_empty(self):
+        activity = FakeActivity(
+            [
+                (team("Team A"), "TRADE_SENT", player("X"), 0),
+                (team("Team B"), "TRADE_RECEIVED", player("X"), 0),
+                (team("Team C"), "DROPPED", player("Y"), 0),
+            ]
+        )
+        for category, message in render_categorised(activity):
+            with self.subTest(category=category):
+                self.assertTrue(message.strip())
 
 
 class TestDegenerateInput(unittest.TestCase):

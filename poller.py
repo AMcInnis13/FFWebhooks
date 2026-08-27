@@ -256,13 +256,24 @@ def player_name(player) -> str:
     return str(getattr(player, "name", player)).strip()
 
 
-def fingerprint(activity) -> str:
-    """A stable content hash for one Activity.
+def fingerprint(activity, category: str = "") -> str:
+    """A stable content hash for one Activity, optionally scoped to a category.
 
     Deliberately not Python's ``hash()``: that is salted per process by
     PYTHONHASHSEED, so it would produce a different value on every Actions
     run and defeat the whole point of persisting fingerprints. Actions are
     sorted so that ordering differences between runs do not change the hash.
+
+    Two kinds of marker end up in ``seen_fingerprints``:
+
+    * ``fingerprint(activity)`` -- the whole activity is handled. Written by
+      bootstrap, and for activities with nothing renderable.
+    * ``fingerprint(activity, category)`` -- that one category has posted.
+
+    The category is mixed into the hash rather than appended as a suffix so
+    the stored value stays an opaque hex string. A literal ``:trades`` suffix
+    would tell anyone reading the public state.json that a trade happened,
+    which is more than the file discloses today.
     """
     rows = []
     for action in getattr(activity, "actions", []) or []:
@@ -274,6 +285,8 @@ def fingerprint(activity) -> str:
         rows.append(f"{team_name(team)}|{verb}|{player_name(player)}|{bid}")
 
     payload = str(_as_int(getattr(activity, "date", 0))) + "\n" + "\n".join(sorted(rows))
+    if category:
+        payload = f"{payload}\n\x00category={category}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
@@ -650,16 +663,21 @@ def _append_unique(bucket: dict, order: list, key: str, value) -> None:
         bucket[key].append(value)
 
 
-def render_activity(activity) -> str:
-    """Render one Activity as a single Discord message.
+def render_activity(activity) -> list[tuple[str, str]]:
+    """Render one Activity as ``(category, message)`` pairs.
 
-    One message per Activity, not per action: a trade reads as one block
-    showing what each side received, and an add/drop pair from one team reads
-    as one entry rather than two disconnected messages.
+    At most two: a trade block and a roster-moves block, since those route to
+    different channels. Within a category it is still one message per
+    activity, so an add/drop pair from one team reads as a single entry
+    rather than two disconnected messages.
 
-    Returns "" when there is nothing worth posting -- an activity made
-    entirely of unrecognised message types, for example. Callers must still
-    record such an activity as seen, or it will be reconsidered forever.
+    An activity carrying both a trade and a roster move yields both pairs --
+    they belong in different channels, and merging them would defeat the
+    routing.
+
+    Returns [] when there is nothing worth posting: an activity made entirely
+    of unrecognised message types, for example. Callers must still record
+    such an activity as seen, or it will be reconsidered forever.
     """
     received: dict[str, list[str]] = {}
     sent: dict[str, list[str]] = {}
@@ -682,15 +700,27 @@ def render_activity(activity) -> str:
         # rather than rendered, so a message id we don't recognise never
         # reaches the channel as noise.
 
-    blocks: list[str] = []
+    rendered: list[tuple[str, str]] = []
 
     if received or sent:
-        blocks.append(_render_trade(received, sent, trade_order, sent_order))
+        rendered.append(
+            (CATEGORY_TRADES, _render_trade(received, sent, trade_order, sent_order))
+        )
 
-    for team in roster_order:
-        blocks.append(_render_roster_moves(team, adds.get(team, []), drops.get(team, [])))
+    # Every team's roster moves share one channel, so they stay in a single
+    # message rather than one per team.
+    roster_blocks = [
+        block
+        for block in (
+            _render_roster_moves(team, adds.get(team, []), drops.get(team, []))
+            for team in roster_order
+        )
+        if block
+    ]
+    if roster_blocks:
+        rendered.append((CATEGORY_ROSTER, "\n".join(roster_blocks)))
 
-    return "\n".join(block for block in blocks if block)
+    return rendered
 
 
 def _render_trade(received, sent, trade_order, sent_order) -> str:
@@ -735,7 +765,7 @@ def _render_roster_moves(team: str, adds, drops) -> str:
 RECENT_ACTIVITY_SIZE = 50
 
 
-def process_transactions(league, state: dict, discord: Discord) -> int:
+def process_transactions(league, state: dict, router: "DiscordRouter") -> int:
     """Post activities newer than the watermark, oldest first.
 
     Returns the number of messages sent.
@@ -766,29 +796,51 @@ def process_transactions(league, state: dict, discord: Discord) -> int:
     seen_set = set(seen)
     posted = 0
 
+    def record(mark: str) -> None:
+        seen.append(mark)
+        seen_set.add(mark)
+        state["seen_fingerprints"] = seen
+
     for activity in ordered:
         date = _as_int(getattr(activity, "date", 0))
         if date < watermark:
             continue
 
-        mark = fingerprint(activity)
-        if mark in seen_set:
+        # The un-scoped marker means "this whole activity is handled". It is
+        # what bootstrap seeds, and what an unrenderable activity gets.
+        whole = fingerprint(activity)
+        if whole in seen_set:
             continue
 
-        message = render_activity(activity)
-        if message:
-            discord.post(message)
+        messages = render_activity(activity)
+
+        if not messages:
+            # Nothing to say, but leaving it unmarked means reconsidering it
+            # on every run forever.
+            record(whole)
+            watermark = max(watermark, date)
+            state["last_activity_ms"] = watermark
+            continue
+
+        for category, message in messages:
+            mark = fingerprint(activity, category)
+            if mark in seen_set:
+                continue
+
+            router.post(category, message)
             posted += 1
 
-        # Recorded even when nothing rendered. An activity made entirely of
-        # message types we don't recognise has nothing to say, but leaving it
-        # unmarked means reconsidering it on every run forever.
-        seen.append(mark)
-        seen_set.add(mark)
-        watermark = max(watermark, date)
+            # Recorded per category, not per activity. One activity can post
+            # to two channels; if the second fails and only an activity-wide
+            # marker existed, nothing would be recorded and the next run
+            # would repost the message that already succeeded.
+            record(mark)
 
+        # Only advanced once every category has posted. A failure above
+        # leaves the watermark behind, so the next run reconsiders this
+        # activity and retries just the categories still missing.
+        watermark = max(watermark, date)
         state["last_activity_ms"] = watermark
-        state["seen_fingerprints"] = seen
 
     state["last_activity_ms"] = watermark
     state["seen_fingerprints"] = seen
@@ -1370,9 +1422,8 @@ def run_dry_run(now: datetime | None = None) -> int:
 
     config = _fixture_config()
     league = _FixtureLeague()
-    discord = Discord(
-        config.webhook_url, dry_run=True, label="dry-run", session=object(), sleep=lambda _: None
-    )
+    router = DiscordRouter(config, dry_run=True, session=object(), sleep=lambda _: None)
+    discord = router.main
 
     # 16:30 UTC on Sunday 13 Sep 2026 is 11:30 CDT: inside the Sunday
     # reminder window, so that section actually renders.
@@ -1391,7 +1442,7 @@ def run_dry_run(now: datetime | None = None) -> int:
     state["posted_weeks"] = [1, 2]
 
     print("\n--- transactions ---")
-    sent += process_transactions(league, state, discord)
+    sent += process_transactions(league, state, router)
 
     print("\n--- weekly results ---")
     sent += process_results(league, state, discord)
@@ -1428,6 +1479,7 @@ def main(
     env=None,
     league=None,
     state_path: str = STATE_PATH,
+    router=None,
     discord=None,
     results_discord=None,
     now=None,
@@ -1455,18 +1507,12 @@ def main(
 
     state = load_state(state_path)
 
+    if router is None:
+        router = DiscordRouter(config, dry_run=args.dry_run)
     if discord is None:
-        discord = Discord(config.webhook_url, dry_run=args.dry_run, label="transactions")
+        discord = router.main
     if results_discord is None:
-        # Share the instance when both webhooks are the same URL so the
-        # inter-post throttle applies across features too.
-        results_discord = (
-            discord
-            if config.webhook_url_results == config.webhook_url
-            else Discord(
-                config.webhook_url_results, dry_run=args.dry_run, label="results"
-            )
-        )
+        results_discord = router.for_category(CATEGORY_RESULTS)
 
     failures: list[str] = []
 
@@ -1492,7 +1538,7 @@ def main(
     else:
         # Each feature is isolated: one raising must never suppress the others.
         try:
-            process_transactions(league, state, discord)
+            process_transactions(league, state, router)
         except Exception as exc:
             warn(f"transactions failed ({type(exc).__name__})")
             notify_error("transactions", state, discord, now_ms=now_ms)
