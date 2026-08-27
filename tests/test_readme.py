@@ -19,6 +19,8 @@ REQUIRED_ENV_VARS = (
     "ESPN_S2",
     "SWID",
     "DISCORD_WEBHOOK_URL",
+    "DISCORD_WEBHOOK_URL_TRADES",
+    "DISCORD_WEBHOOK_URL_ROSTER",
     "DISCORD_WEBHOOK_URL_RESULTS",
     "TIMEZONE",
     "LINEUP_REMINDERS",
@@ -116,6 +118,33 @@ class TestDiscordWebhook(ReadmeTestCase):
 
     def test_warns_the_webhook_url_is_a_credential(self):
         self.assertIn("credential", self.lower)
+
+
+class TestChannelRouting(ReadmeTestCase):
+    def test_has_a_routing_section(self):
+        self.assert_heading_matching(r"routing|multiple channels")
+
+    def test_states_that_a_webhook_is_bound_to_one_channel(self):
+        # The whole reason multiple webhooks are needed.
+        self.assertRegex(self.text, r"(?i)bound to \*\*one\*\* channel|bound to one channel")
+
+    def test_lists_what_lands_in_each_channel(self):
+        for term in ("Trades", "Waiver claims", "Weekly results"):
+            with self.subTest(term=term):
+                self.assertIn(term, self.text)
+
+    def test_says_the_extra_webhooks_are_optional(self):
+        self.assertRegex(self.text, r"(?i)optional except the first|falls back to")
+
+    def test_explains_the_fallback(self):
+        self.assertRegex(self.text, r"(?i)falls? back to\s+`?DISCORD_WEBHOOK_URL`?")
+
+    def test_explains_why_errors_are_not_routable(self):
+        # A warning in a channel nobody watches is nearly no warning at all.
+        self.assertRegex(self.text, r"(?i)errors? and the startup confirmation always go")
+
+    def test_points_at_dry_run_for_previewing_routing(self):
+        self.assertIn("--dry-run", self.text)
 
 
 class TestSecretsSetup(ReadmeTestCase):

@@ -69,6 +69,10 @@ jobs:
           ESPN_S2: ${{ secrets.ESPN_S2 }}
           SWID: ${{ secrets.SWID }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          # Optional per-category channels. Any left unset fall back to
+          # DISCORD_WEBHOOK_URL, so a single-channel install needs none of them.
+          DISCORD_WEBHOOK_URL_TRADES: ${{ secrets.DISCORD_WEBHOOK_URL_TRADES }}
+          DISCORD_WEBHOOK_URL_ROSTER: ${{ secrets.DISCORD_WEBHOOK_URL_ROSTER }}
           DISCORD_WEBHOOK_URL_RESULTS: ${{ secrets.DISCORD_WEBHOOK_URL_RESULTS }}
           # Non-sensitive, so these live in repository variables where they
           # are easy to edit. Both fall back to the script's defaults when

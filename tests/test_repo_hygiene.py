@@ -52,16 +52,26 @@ def read_tracked():
 
 
 def have_git():
+    """True only when REPO_ROOT is itself the root of a git checkout.
+
+    Checking merely that git works would also pass when the project has been
+    unzipped into a folder that happens to live inside some *other* git repo:
+    `git ls-files` would then return an empty list and every check below
+    would fail for a reason that has nothing to do with this project.
+    """
     try:
-        subprocess.run(
-            ["git", "rev-parse", "--git-dir"],
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
             cwd=REPO_ROOT,
             capture_output=True,
+            text=True,
             check=True,
         )
-        return True
     except (OSError, subprocess.CalledProcessError):  # pragma: no cover
         return False
+
+    toplevel = os.path.normcase(os.path.realpath(result.stdout.strip()))
+    return toplevel == os.path.normcase(os.path.realpath(REPO_ROOT))
 
 
 @unittest.skipUnless(have_git(), "not a git checkout")

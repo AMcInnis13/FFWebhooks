@@ -159,7 +159,6 @@ class MainTestCase(unittest.TestCase):
                 league=FakeLeague() if league is UNSET else league,
                 state_path=self.path,
                 router=RecordingRouter(self.discord),
-                discord=self.discord,
                 now_ms=NOW_MS,
                 **kwargs,
             )
@@ -320,7 +319,7 @@ class TestErrorRateLimiting(MainTestCase):
                 env=FAKE_ENV,
                 league=league,
                 state_path=self.path,
-                discord=self.discord,
+                router=RecordingRouter(self.discord),
                 now_ms=NOW_MS + 20 * 60 * 1000,
             )
         self.assertEqual(len(self.discord.messages), first_count)
@@ -337,7 +336,7 @@ class TestErrorRateLimiting(MainTestCase):
                 env=FAKE_ENV,
                 league=league,
                 state_path=self.path,
-                discord=self.discord,
+                router=RecordingRouter(self.discord),
                 now_ms=NOW_MS + ERROR_COOLDOWN_MS + 1,
             )
         self.assertEqual(len(self.discord.messages), 2)

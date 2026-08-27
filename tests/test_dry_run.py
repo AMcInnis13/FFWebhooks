@@ -71,6 +71,57 @@ class TestOutput(unittest.TestCase):
         self.assertIn("DRY RUN", self.output)
         self.assertIn("no network calls", self.output)
 
+    def test_reports_how_many_channels_are_in_use(self):
+        self.assertIn("Routing across 4 channels", self.output)
+
+
+class TestChannelLabels(unittest.TestCase):
+    """Every message must name the channel it would reach.
+
+    This caught a real bug: weekly results were being handed the main
+    channel rather than the results channel, so a split setup would have
+    quietly posted scores into the wrong place.
+    """
+
+    def setUp(self):
+        self.code, self.output = capture(run_dry_run)
+
+    def line_for(self, needle):
+        lines = self.output.splitlines()
+        for index, line in enumerate(lines):
+            if needle in line:
+                # Walk back to the nearest "would POST" header.
+                for header in reversed(lines[:index]):
+                    if "would POST" in header:
+                        return header
+        self.fail(f"no message containing {needle!r}")
+
+    def test_trades_go_to_the_trades_channel(self):
+        self.assertIn("trades channel", self.line_for("Trade processed"))
+
+    def test_waivers_go_to_the_roster_channel(self):
+        self.assertIn("roster moves channel", self.line_for("$42 waiver"))
+
+    def test_free_agent_adds_go_to_the_roster_channel(self):
+        self.assertIn("roster moves channel", self.line_for("Kimani Vidal"))
+
+    def test_results_go_to_the_results_channel(self):
+        self.assertIn("results channel", self.line_for("Week 3 Results"))
+
+    def test_the_startup_message_goes_to_main(self):
+        self.assertIn("main channel", self.line_for("notifier is online"))
+
+    @unittest.skipUnless(HAVE_TZDATA, "tz database unavailable (pip install tzdata)")
+    def test_reminders_go_to_main(self):
+        self.assertIn("main channel", self.line_for("Lineups lock"))
+
+    def test_every_post_names_a_channel(self):
+        headers = [l for l in self.output.splitlines() if "would POST" in l]
+        self.assertTrue(headers)
+        for header in headers:
+            with self.subTest(header=header):
+                self.assertIn("channel", header)
+
 
 class TestNoSideEffects(unittest.TestCase):
     def test_no_http_session_is_created(self):

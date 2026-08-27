@@ -99,13 +99,35 @@ You also need your **league id**, the `leagueId=` number in your league's URL.
 ### 3. Create a Discord webhook
 
 1. In Discord, open **Server Settings → Integrations → Webhooks**.
-2. Click **New Webhook**, choose the channel you want transactions posted to, and give it a name.
+2. Click **New Webhook**, choose the channel you want notifications posted to, and give it a name.
 3. Click **Copy Webhook URL**.
 
-Optionally repeat this for a second channel if you want weekly results posted separately.
+That one webhook is enough — everything posts to that single channel. To split messages across several
+channels, see [Routing to multiple channels](#routing-to-multiple-channels) below.
 
 > **A webhook URL is a credential.** Anyone who has it can post to that channel as your webhook. Keep it
 > in repository secrets only.
+
+### Routing to multiple channels
+
+A Discord webhook is permanently bound to **one** channel, so each destination needs its own webhook.
+Create one per channel exactly as above, then add whichever of these you want:
+
+| Secret | What lands there |
+|---|---|
+| `DISCORD_WEBHOOK_URL` | Everything not listed below: lineup reminders, the startup message, and any error notices |
+| `DISCORD_WEBHOOK_URL_TRADES` | Trades |
+| `DISCORD_WEBHOOK_URL_ROSTER` | Waiver claims, free agent adds, and drops |
+| `DISCORD_WEBHOOK_URL_RESULTS` | Weekly results |
+
+**All of these are optional except the first.** Anything left unset falls back to
+`DISCORD_WEBHOOK_URL`, so you can split only the parts you care about — routing trades to their own
+channel and leaving everything else together is a perfectly reasonable setup.
+
+Errors and the startup confirmation always go to `DISCORD_WEBHOOK_URL`. That is deliberate: a "cookies
+have expired" warning delivered to a channel nobody watches is barely better than no warning at all.
+
+Run `python poller.py --dry-run` locally to see which channel each message type would reach.
 
 ### 4. Add repository secrets
 
@@ -117,8 +139,10 @@ Go to **Settings → Secrets and variables → Actions → Secrets → New repos
 | `LEAGUE_YEAR` | yes | The season year, e.g. `2026` |
 | `ESPN_S2` | yes | The `espn_s2` cookie value |
 | `SWID` | yes | The `SWID` cookie value |
-| `DISCORD_WEBHOOK_URL` | yes | Webhook for transactions and reminders |
-| `DISCORD_WEBHOOK_URL_RESULTS` | no | Webhook for weekly results; falls back to the main one |
+| `DISCORD_WEBHOOK_URL` | yes | Main webhook; also the fallback for anything below |
+| `DISCORD_WEBHOOK_URL_TRADES` | no | Trades only; falls back to the main one |
+| `DISCORD_WEBHOOK_URL_ROSTER` | no | Waivers, adds, and drops; falls back to the main one |
+| `DISCORD_WEBHOOK_URL_RESULTS` | no | Weekly results; falls back to the main one |
 
 ### 5. Add repository variables (optional)
 
@@ -155,7 +179,9 @@ If the run fails, see [Troubleshooting](#troubleshooting).
 | `LEAGUE_YEAR` | yes | — | Season year, e.g. `2026` |
 | `ESPN_S2` | yes | — | Private league cookie |
 | `SWID` | yes | — | Private league cookie; braces optional |
-| `DISCORD_WEBHOOK_URL` | yes | — | Transactions and reminders |
+| `DISCORD_WEBHOOK_URL` | yes | — | Reminders, startup message, error notices, and anything unrouted |
+| `DISCORD_WEBHOOK_URL_TRADES` | no | main webhook | Trades |
+| `DISCORD_WEBHOOK_URL_ROSTER` | no | main webhook | Waiver claims, free agent adds, drops |
 | `DISCORD_WEBHOOK_URL_RESULTS` | no | main webhook | Weekly results |
 | `TIMEZONE` | no | `America/Chicago` | IANA zone name |
 | `LINEUP_REMINDERS` | no | `true` | `true`/`false`/`1`/`0`/`yes`/`no` |

@@ -493,8 +493,8 @@ class Discord:
         }
 
         if self.dry_run:
-            tag = f" {self.label}" if self.label else ""
-            print(f"--- would POST to Discord{tag} [{index}/{total}, {len(content)} chars] ---")
+            where = f"the {self.label} channel" if self.label else "Discord"
+            print(f"--- would POST to {where} [{index}/{total}, {len(content)} chars] ---")
             print(content)
             self._posted_any = True
             return
@@ -1386,14 +1386,21 @@ class _FixtureLeague:
 
 
 def _fixture_config() -> Config:
-    """Config for a dry run. No env vars required, no real values."""
+    """Config for a dry run. No env vars required, no real values.
+
+    Each category gets a distinct fake URL so the output shows which channel
+    every message would land in. A real install that configures only
+    DISCORD_WEBHOOK_URL sends all of these to one channel instead.
+    """
     return Config(
         league_id=1234567,
         league_year=2026,
         espn_s2="DRY-RUN",
         swid="{DRY-RUN}",
-        webhook_url="https://example.invalid/hook",
-        webhook_url_results="https://example.invalid/hook",
+        webhook_url="https://example.invalid/hook/main",
+        webhook_url_results="https://example.invalid/hook/results",
+        webhook_url_trades="https://example.invalid/hook/trades",
+        webhook_url_roster="https://example.invalid/hook/roster",
         timezone=DEFAULT_TIMEZONE,
         lineup_reminders=True,
     )
@@ -1431,6 +1438,10 @@ def run_dry_run(now: datetime | None = None) -> int:
         now = datetime(2026, 9, 13, 16, 30, tzinfo=timezone.utc)
 
     print("=== DRY RUN — no network calls, no state written ===")
+    print(
+        f"Routing across {router.channel_count} channels. Configure fewer webhooks "
+        "and the extras fall back to the main one."
+    )
     sent = 0
 
     print("\n--- first run (bootstrap) ---")
@@ -1445,7 +1456,7 @@ def run_dry_run(now: datetime | None = None) -> int:
     sent += process_transactions(league, state, router)
 
     print("\n--- weekly results ---")
-    sent += process_results(league, state, discord)
+    sent += process_results(league, state, router.for_category(CATEGORY_RESULTS))
 
     print("\n--- lineup reminders ---")
     try:
@@ -1480,8 +1491,6 @@ def main(
     league=None,
     state_path: str = STATE_PATH,
     router=None,
-    discord=None,
-    results_discord=None,
     now=None,
     now_ms=None,
 ) -> int:
@@ -1509,10 +1518,10 @@ def main(
 
     if router is None:
         router = DiscordRouter(config, dry_run=args.dry_run)
-    if discord is None:
-        discord = router.main
-    if results_discord is None:
-        results_discord = router.for_category(CATEGORY_RESULTS)
+
+    # Reminders, bootstrap, and every error notice go to the main channel.
+    discord = router.main
+    results_discord = router.for_category(CATEGORY_RESULTS)
 
     failures: list[str] = []
 
