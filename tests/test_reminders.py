@@ -150,17 +150,37 @@ class TestDaylightSaving(unittest.TestCase):
         self.assertIsNotNone(due_reminder(local_now("America/Chicago", utc(2026, 9, 13, 16, 30))))
         self.assertIsNone(due_reminder(local_now("America/Chicago", utc(2026, 9, 13, 17, 30))))
 
-    def test_november_fires_at_1730_utc_not_1630(self):
+    def test_november_fires_at_1730_utc_but_not_1545(self):
+        # Probe times are chosen against the 90-minute window, which opens at
+        # 10:30 CT. 16:30 UTC used to sit outside it; at 90 minutes it does
+        # not, so the "too early" probe moved to 15:45 UTC (09:45 CST).
         self.assertIsNotNone(due_reminder(local_now("America/Chicago", utc(2026, 11, 8, 17, 30))))
-        self.assertIsNone(due_reminder(local_now("America/Chicago", utc(2026, 11, 8, 16, 30))))
+        self.assertIsNone(due_reminder(local_now("America/Chicago", utc(2026, 11, 8, 15, 45))))
 
     def test_a_fixed_utc_cron_would_have_drifted(self):
-        # 16:30 UTC is correct in September and an hour early in November.
-        # This is the bug a second hardcoded-cron workflow would have shipped.
-        september = due_reminder(local_now("America/Chicago", utc(2026, 9, 13, 16, 30)))
-        november = due_reminder(local_now("America/Chicago", utc(2026, 11, 8, 16, 30)))
-        self.assertIsNotNone(september)
-        self.assertIsNone(november)
+        # The same UTC instant lands on different CT wall clocks either side
+        # of the DST change, and the window follows the wall clock. This is
+        # the bug a second hardcoded-cron workflow would have shipped.
+        #
+        # 15:45 UTC -> 10:45 CDT in September (inside), 09:45 CST in
+        # November (too early).
+        self.assertIsNotNone(due_reminder(local_now("America/Chicago", utc(2026, 9, 13, 15, 45))))
+        self.assertIsNone(due_reminder(local_now("America/Chicago", utc(2026, 11, 8, 15, 45))))
+
+        # 17:30 UTC -> 12:30 CDT in September (after kickoff), 11:30 CST in
+        # November (inside). The drift runs both ways.
+        self.assertIsNone(due_reminder(local_now("America/Chicago", utc(2026, 9, 13, 17, 30))))
+        self.assertIsNotNone(due_reminder(local_now("America/Chicago", utc(2026, 11, 8, 17, 30))))
+
+    def test_probe_times_are_valid_for_the_configured_window(self):
+        # The times above are only meaningful while the window is 90 minutes.
+        # If it changes, fail here with the reason rather than in a DST test
+        # that looks like a timezone bug.
+        self.assertEqual(
+            REMINDER_WINDOW_MINUTES,
+            90,
+            "DST probe times in this class are sized against a 90-minute window",
+        )
 
     def test_keys_use_the_local_date_not_utc(self):
         # 00:30 UTC Monday is still Sunday evening in Chicago.
@@ -201,10 +221,10 @@ class TestCronCoverage(unittest.TestCase):
             with self.subTest(offset=offset):
                 self.assertEqual(self.simulate_day(SUNDAY_CST, offset), 1)
 
-    def test_window_absorbs_a_sparse_cron(self):
-        # Checked against 45, not the configured 5: the window has to survive
-        # GitHub skipping runs, not just the nominal interval.
-        self.assertGreaterEqual(REMINDER_WINDOW_MINUTES, 45)
+    def test_window_is_wider_than_the_cron_interval(self):
+        # The cron is hourly. A 60-minute window would have zero margin --
+        # exactly one run inside it, so one delayed run drops the reminder.
+        self.assertGreater(REMINDER_WINDOW_MINUTES, 60)
 
     def simulate_day_at(self, date, step_minutes, start_minute_offset):
         """Run every `step_minutes` through the day; count reminders posted."""
@@ -222,7 +242,7 @@ class TestCronCoverage(unittest.TestCase):
         # The real failure this window exists to prevent: GitHub delivers a
         # */5 cron as something far sparser, and a narrow window falls
         # entirely between two runs. No error, just a missing reminder.
-        for step in (30, 45, 55):
+        for step in (30, 45, 60, 75, 90):
             for offset in range(0, step, 7):
                 with self.subTest(step=step, offset=offset):
                     self.assertEqual(
@@ -233,13 +253,14 @@ class TestCronCoverage(unittest.TestCase):
 
     def test_a_gap_wider_than_the_window_can_still_miss(self):
         # Honest about the limit: nothing saves a reminder if GitHub goes
-        # quiet for longer than the window is open.
+        # quiet for longer than the window is open. Pinned so the guarantee
+        # is not mistaken for absolute.
         missed = [
             offset
-            for offset in range(0, 90, 7)
-            if self.simulate_day_at(SUNDAY_CDT, 90, offset) == 0
+            for offset in range(0, 150, 7)
+            if self.simulate_day_at(SUNDAY_CDT, 150, offset) == 0
         ]
-        self.assertTrue(missed, "expected some 90-minute phases to miss")
+        self.assertTrue(missed, "expected some 150-minute phases to miss")
 
 
 @requires_tzdata

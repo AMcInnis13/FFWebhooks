@@ -1055,11 +1055,21 @@ REMINDER_LEAD_MINUTES = 30
 # stretches. A window narrower than the real gap between runs means the
 # reminder is missed silently -- no error, just no message, once a week.
 #
-# 60 minutes tolerates gaps of up to an hour. The message reports the actual
-# minutes remaining rather than a fixed "30", so an early fire still reads
-# correctly ("Lineups lock in 52 minutes"). The window still closes at
-# kickoff: a reminder is useless once lineups have locked.
-REMINDER_WINDOW_MINUTES = 60
+# Must stay comfortably WIDER than the cron interval, currently hourly.
+# Measured across every phase offset on both reminder days:
+#
+#   window 60  -> fine at exactly 60-minute gaps, misses at 65+
+#   window 90  -> fine through 90-minute gaps
+#
+# A 60-minute window against an hourly cron has zero margin: exactly one run
+# lands inside it, so a single delayed run drops the reminder silently. 90
+# absorbs half an hour of GitHub's scheduling slippage. If the cron interval
+# ever changes, re-check this number -- it is a function of that interval.
+#
+# The message reports actual minutes remaining rather than a fixed "30", so
+# an early fire still reads correctly ("Lineups lock in 78 minutes"). The
+# window still closes at kickoff: a reminder is useless once lineups lock.
+REMINDER_WINDOW_MINUTES = 90
 
 # The league year is "active" across these weeks. Fantasy playoffs land
 # inside NFL weeks 1-18, so this covers the regular season and the postseason
@@ -1287,9 +1297,9 @@ def is_auth_error(exc: BaseException) -> bool:
 def notify_error(kind: str, state: dict, discord: Discord, *, now_ms=None) -> bool:
     """Post a rate-limited error notice. Returns True if one was sent.
 
-    Rate limited to once per day per kind: a persistent failure on a
-    5-minute cron would otherwise post nearly 300 times a day, and a channel
-    full of identical warnings gets muted, which is silence with extra steps.
+    Rate limited to once per day per kind: a persistent failure would
+    otherwise post on every run, and a channel full of identical warnings
+    gets muted, which is silence with extra steps.
     """
     now_ms = _now_ms() if now_ms is None else now_ms
     notices = dict(state.get("error_notices") or {})

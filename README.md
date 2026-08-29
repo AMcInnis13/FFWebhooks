@@ -3,7 +3,7 @@
 Posts your ESPN fantasy league's transactions, weekly results, and lineup lock reminders to a Discord
 channel. Runs entirely on GitHub Actions cron — no server, no always-on process, no Discord bot.
 
-It is a one-shot Python script polled every 5 minutes. All persistence lives in `state.json`, which the
+It is a one-shot Python script polled once an hour. All persistence lives in `state.json`, which the
 workflow commits back to the repository.
 
 ## What it posts
@@ -34,7 +34,7 @@ Weekly results once a week is complete, with the week's high and low:
   Low: Sofa Sharks — 118.6
 ```
 
-Lineup lock reminders, in the hour before Thursday and Sunday kickoff. The message reports the real time
+Lineup lock reminders, in the 90 minutes before Thursday and Sunday kickoff. The message reports the real time
 remaining, so it is accurate whenever it happens to fire:
 
 ```
@@ -45,9 +45,10 @@ remaining, so it is accurate whenever it happens to fire:
 
 **Recommended: make this repository public.**
 
-Private repositories get 2,000 free Actions minutes per month. A run every 5 minutes is roughly 8,600
-runs a month, so a private repo would exhaust its free minutes within days and the notifier would stop.
-Public repositories get unlimited Actions minutes.
+Private repositories get 2,000 free Actions minutes per month. At the default hourly schedule that is
+roughly 730 runs a month, which does fit -- so a private repo is viable if you would rather keep
+`state.json` out of view. Public repositories get unlimited Actions minutes, which leaves headroom to
+run more often without watching the meter.
 
 Secrets are encrypted either way — a public repo does **not** expose your cookies or webhook URL. What
 does become publicly visible is `state.json`, so it is worth knowing exactly what that file contains:
@@ -202,9 +203,11 @@ If the run fails, see [Troubleshooting](#troubleshooting).
 
 ## How it works
 
-**Schedule.** The workflow runs every 5 minutes, August through January. Five minutes is GitHub's
-minimum interval, and its scheduler drops short-interval runs first under load, so expect somewhat
-fewer in practice. Nothing depends on the cadence -- deduplication is content-hashed, not timed.
+**Schedule.** The workflow runs once an hour, August through January. Hourly rather than every few
+minutes on purpose: GitHub's scheduler is best-effort and drops short-interval schedules first under
+load, so a `*/5` cron delivers unpredictable gaps while an hourly one reliably fires. The cost is
+latency -- a transaction can wait up to an hour. Nothing breaks either way: deduplication is
+content-hashed, not timed, so a delayed run means later notifications, never lost or duplicated ones.
 
 The cron month field (`8-12,1`) keeps it from waking up in the offseason. August is included so that
 draft-day trades and waiver claims post live — most leagues draft in late August, and without it those
@@ -215,7 +218,7 @@ relevant month.
 `.github/workflows/notifier.yml` and change the cron month field to `*`:
 
 ```yaml
-- cron: "*/5 * * * *"
+- cron: "0 * * * *"
 ```
 
 Nothing else needs changing — the script is already safe to run in the offseason.
@@ -228,10 +231,11 @@ millisecond, and a timestamp alone would silently drop the second one.
 cron. Central time shifts an hour under daylight saving in November, and a hardcoded UTC schedule would
 drift without anything failing loudly.
 
-The reminder window opens a full hour before kickoff and closes at kickoff, firing once. That is much
-wider than the 5-minute schedule because GitHub's scheduler is best-effort: it delays and drops runs
-under load, and a window narrower than the real gap between runs would miss the reminder silently. An
-hour tolerates gaps of up to an hour; beyond that a reminder can still be missed, with no error.
+The reminder window opens 90 minutes before kickoff and closes at kickoff, firing once. It is
+deliberately wider than the hourly schedule: GitHub's scheduler delays and drops runs, and a window
+narrower than the real gap between runs would miss the reminder silently, with no error. 90 minutes
+leaves half an hour of slack against an hourly cron. If you change the cron interval, re-check
+`REMINDER_WINDOW_MINUTES` -- it is sized against it.
 
 **Failure isolation.** Transactions, weekly results, and reminders each run independently. One failing
 never suppresses the other two.

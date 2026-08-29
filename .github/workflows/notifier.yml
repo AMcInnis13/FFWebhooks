@@ -2,13 +2,17 @@ name: Fantasy notifier
 
 on:
   schedule:
-    # Every 5 minutes, August through January only.
+    # Once an hour, August through January only.
     #
-    # Five minutes is GitHub's documented minimum interval. On a public repo
-    # Actions minutes are unlimited, so the cost of this cadence is not
-    # billing -- it is roughly four times the request volume against ESPN's
-    # unofficial API. If ESPN ever starts refusing requests, widening this
-    # back to */10 or */20 is the first thing to try.
+    # Chosen over a */5 schedule deliberately. GitHub's scheduler is
+    # best-effort and drops short-interval runs first under load, so a */5
+    # cron delivers nowhere near 12 runs an hour and the real gap between
+    # runs is unpredictable. An hourly schedule is far more likely to
+    # actually fire each hour, which makes behaviour predictable at the cost
+    # of latency: a transaction can sit up to an hour before it is posted.
+    #
+    # REMINDER_WINDOW_MINUTES in poller.py must stay comfortably wider than
+    # this interval, or a single delayed run silently eats a lineup reminder.
     #
     # The month field (8-12,1) keeps the job from waking up in the offseason.
     # August is included so that draft-day trades and waiver claims post live
@@ -17,15 +21,15 @@ on:
     #
     # DYNASTY LEAGUES: rookie drafts and offseason trades happen year round.
     # To widen this, change the month field to `*`:
-    #     - cron: "*/5 * * * *"
+    #     - cron: "0 * * * *"
     # Nothing else needs to change; the script is already safe to run in the
     # offseason (no completed weeks to post, and reminders self-suppress
     # outside weeks 1-18).
     #
-    # GitHub's scheduler is best-effort, runs late under load, and drops
-    # short-interval runs first -- expect fewer than 12 an hour in practice.
-    # Nothing depends on the cadence: dedup is content-hashed, not timed.
-    - cron: "*/5 * * 8-12,1 *"
+    # Nothing depends on the cadence: dedup is content-hashed, not timed, so
+    # a delayed or skipped run means later notifications, never lost or
+    # duplicated ones.
+    - cron: "0 * * 8-12,1 *"
 
   # Manual trigger, for the first-run smoke test and for debugging.
   workflow_dispatch:
