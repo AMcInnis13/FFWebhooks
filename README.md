@@ -34,7 +34,8 @@ Weekly results once a week is complete, with the week's high and low:
   Low: Sofa Sharks — 118.6
 ```
 
-Lineup lock reminders, 30 minutes before Thursday and Sunday kickoff:
+Lineup lock reminders, in the hour before Thursday and Sunday kickoff. The message reports the real time
+remaining, so it is accurate whenever it happens to fire:
 
 ```
 **Lineups lock in 30 minutes** for the Sunday early games.
@@ -226,6 +227,11 @@ millisecond, and a timestamp alone would silently drop the second one.
 **Lineup reminders** are computed in your configured timezone at runtime rather than by a fixed UTC
 cron. Central time shifts an hour under daylight saving in November, and a hardcoded UTC schedule would
 drift without anything failing loudly.
+
+The reminder window opens a full hour before kickoff and closes at kickoff, firing once. That is much
+wider than the 5-minute schedule because GitHub's scheduler is best-effort: it delays and drops runs
+under load, and a window narrower than the real gap between runs would miss the reminder silently. An
+hour tolerates gaps of up to an hour; beyond that a reminder can still be missed, with no error.
 
 **Failure isolation.** Transactions, weekly results, and reminders each run independently. One failing
 never suppresses the other two.

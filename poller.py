@@ -1049,13 +1049,17 @@ REMINDER_SLOTS = {
 
 REMINDER_LEAD_MINUTES = 30
 
-# The window opens a little earlier than the nominal 30-minute lead so the
-# cron cannot step over it. Sized for a 20-minute cron with 15 minutes of
-# slack, and kept at 35 after the move to 5 minutes: GitHub's scheduler is
-# best-effort and drops short-interval runs first, so the real gap between
-# runs can be far longer than the configured interval. The window still
-# closes at kickoff -- the reminder is useless once lineups have locked.
-REMINDER_WINDOW_MINUTES = 35
+# How long before kickoff the window opens. Widened from 35 to 60 after
+# observing that GitHub delivers nowhere near the configured cadence: a */5
+# schedule is best-effort, drops runs under load, and can go quiet for long
+# stretches. A window narrower than the real gap between runs means the
+# reminder is missed silently -- no error, just no message, once a week.
+#
+# 60 minutes tolerates gaps of up to an hour. The message reports the actual
+# minutes remaining rather than a fixed "30", so an early fire still reads
+# correctly ("Lineups lock in 52 minutes"). The window still closes at
+# kickoff: a reminder is useless once lineups have locked.
+REMINDER_WINDOW_MINUTES = 60
 
 # The league year is "active" across these weeks. Fantasy playoffs land
 # inside NFL weeks 1-18, so this covers the regular season and the postseason

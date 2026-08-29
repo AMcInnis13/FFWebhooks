@@ -202,9 +202,44 @@ class TestCronCoverage(unittest.TestCase):
                 self.assertEqual(self.simulate_day(SUNDAY_CST, offset), 1)
 
     def test_window_absorbs_a_sparse_cron(self):
-        # Still checked against 20 rather than 5: the window has to survive
-        # GitHub skipping runs, not just the configured interval.
-        self.assertGreater(REMINDER_WINDOW_MINUTES, 20)
+        # Checked against 45, not the configured 5: the window has to survive
+        # GitHub skipping runs, not just the nominal interval.
+        self.assertGreaterEqual(REMINDER_WINDOW_MINUTES, 45)
+
+    def simulate_day_at(self, date, step_minutes, start_minute_offset):
+        """Run every `step_minutes` through the day; count reminders posted."""
+        state = default_state()
+        total = 0
+        cursor = ct(*date, 0, 0) + timedelta(minutes=start_minute_offset)
+        end = ct(*date, 23, 59)
+        while cursor < end:
+            posted, state, _ = fire(cursor.astimezone(UTC), state=state)
+            total += posted
+            cursor += timedelta(minutes=step_minutes)
+        return total
+
+    def test_survives_github_skipping_most_runs(self):
+        # The real failure this window exists to prevent: GitHub delivers a
+        # */5 cron as something far sparser, and a narrow window falls
+        # entirely between two runs. No error, just a missing reminder.
+        for step in (30, 45, 55):
+            for offset in range(0, step, 7):
+                with self.subTest(step=step, offset=offset):
+                    self.assertEqual(
+                        self.simulate_day_at(SUNDAY_CDT, step, offset),
+                        1,
+                        f"a {step}-minute gap lost the reminder",
+                    )
+
+    def test_a_gap_wider_than_the_window_can_still_miss(self):
+        # Honest about the limit: nothing saves a reminder if GitHub goes
+        # quiet for longer than the window is open.
+        missed = [
+            offset
+            for offset in range(0, 90, 7)
+            if self.simulate_day_at(SUNDAY_CDT, 90, offset) == 0
+        ]
+        self.assertTrue(missed, "expected some 90-minute phases to miss")
 
 
 @requires_tzdata
