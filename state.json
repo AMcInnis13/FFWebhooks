@@ -6,7 +6,9 @@
     "2026-09-10-thursday",
     "2026-09-13-sunday"
   ],
-  "posted_weeks": [],
+  "posted_weeks": [
+    1
+  ],
   "seen_fingerprints": [
     "3a9eeee7f25d4e50",
     "8e8524b33595baeb",
