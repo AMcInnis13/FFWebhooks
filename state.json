@@ -3,7 +3,7 @@
     "league": 1792749233302,
     "transactions": 1789596095718
   },
-  "last_activity_ms": 1794759982322,
+  "last_activity_ms": 1794772051353,
   "posted_reminders": [
     "2026-09-03-thursday",
     "2026-09-06-sunday",
@@ -28,14 +28,6 @@
     9
   ],
   "seen_fingerprints": [
-    "252744d389dd84ca",
-    "27f59104ab69d4b8",
-    "4c74e9e15333ba95",
-    "93db8946e7f5cae5",
-    "fbba0175009997a5",
-    "0ea9827f5c07893f",
-    "8a63cfb0d3de5c12",
-    "76508d8e3bac971c",
     "9673b1f4b846a0ba",
     "b413149b6b541714",
     "002d8f855a62fa7d",
@@ -327,6 +319,14 @@
     "045312a142e440a3",
     "ef07d99b50ef0503",
     "784c664d4fe71f28",
-    "46ac541dbb07f384"
+    "46ac541dbb07f384",
+    "187d68cf19373beb",
+    "97f6501b737ccb1f",
+    "a6be4b04ebd030ff",
+    "027b8cf245ff3ec1",
+    "5dd11fd64bd421de",
+    "ed3b552266eff544",
+    "6cf49b550a57c61d",
+    "3250ec23e9b252cf"
   ]
 }
